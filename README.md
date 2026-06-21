@@ -26,6 +26,8 @@ _✨ 在 QQ/微信/Telegram 上远程操控 Hermes Agent ✨_
 - **实时查看回复** — Hermes 返回的内容直接出现在你的聊天窗口
 - **快捷发送** — 支持 `> 消息` 前缀快捷发送，无需打指令
 - **自然语言操控** — 通过 AstrBot 的 LLM Function Calling，用自然语言管理 Hermes
+- **审批安全系统** — 敏感操作需要用户确认，防止误操作。支持全部批准、单条批准、全部拒绝
+- **Hermes 审批模式切换** — 可配置 yolo 模式跳过 Hermes 侧的危险操作确认
 - **会话持久化** — 所有会话通过 Hermes 内置 session 系统自动管理
 - **文件浏览** — 远程查看 Hermes 工作目录文件
 
@@ -80,7 +82,28 @@ _✨ 在 QQ/微信/Telegram 上远程操控 Hermes Agent ✨_
 | `quick_prefix` | 快捷发送前缀 | `>` |
 | `output_mode` | 输出模式：`simple` / `verbose` | `simple` |
 | `auto_create_session` | 快捷发送时自动创建新会话 | `true` |
+| `require_approval` | LLM 工具操作需审批确认 | `true` |
+| `approval_timeout` | 审批超时时间（秒） | `60` |
+| `hermes_approval_mode` | Hermes CLI 审批模式。`normal`=默认需确认，`yolo`=跳过危险操作确认 | `normal` |
 | `default_system_prompt` | 新会话默认系统提示词 | 空（使用 Hermes 默认） |
+
+### Hermes 审批模式说明
+
+插件有两层审批系统，各司其职：
+
+| 层级 | 配置项 | 作用 |
+|------|--------|------|
+| **AstrBot 层** | `require_approval` | 发消息/创建会话前，先在聊天窗口问你"批准吗？" |
+| **Hermes 层** | `hermes_approval_mode` | Hermes 执行敏感操作（rm、文件写入等）时是否自动批准 |
+
+```
+示例：你想让 Hermes 清理临时文件
+                         AstrBot 层             Hermes 层
+"给会话1发消息: 清/tmp"  →  "批准吗？"           →
+                            你: /hermes a        Hermes: "要执行 rm -rf ?"
+                                                normal模式 → 等你确认
+                                                yolo模式  → 自动放行
+```
 
 ## ⌨️ 指令
 
@@ -113,6 +136,16 @@ _✨ 在 QQ/微信/Telegram 上远程操控 Hermes Agent ✨_
 | `/hermes abort` | 中断当前会话 |
 | `/hermes help` | 显示帮助 |
 
+### 审批操作
+
+| 指令 | 说明 |
+|------|------|
+| `/hermes pending` (`/hermes p`) | 查看待审批请求 |
+| `/hermes a` | 批准全部待审批 |
+| `/hermes allow <序号>` | 批准指定序号 |
+| `/hermes deny` | 拒绝全部 |
+| `/hermes deny <序号>` | 拒绝指定序号 |
+
 ## 🧠 自然语言（LLM 工具）
 
 在 AstrBot 管理面板开启工具的插件后，可以用自然语言操控：
@@ -120,10 +153,12 @@ _✨ 在 QQ/微信/Telegram 上远程操控 Hermes Agent ✨_
 | 你说 | 插件会 |
 |------|--------|
 | "帮我看看有哪些 Hermes 会话" | 调用 `hermes_list_sessions` 列出会话 |
-| "给第 1 个会话发消息：继续优化代码" | 调用 `hermes_send_message` 发送消息 |
-| "创建一个新会话，写个 Flask 应用" | 调用 `hermes_create_session` 创建会话 |
+| "给第 1 个会话发消息：继续优化代码" | 调用 `hermes_send_message` → ⚠️ **需审批** |
+| "创建一个新会话，写个 Flask 应用" | 调用 `hermes_create_session` → ⚠️ **需审批** |
 | "切换到第 2 个会话" | 调用 `hermes_switch_session` 切换 |
 | "Hermes 还活着吗？" | 调用 `hermes_check_health` 检查状态 |
+
+> ⚠️ 当 `require_approval=true`（默认）时，`hermes_send_message` 和 `hermes_create_session` 会触发审批通知，你需要使用 `/hermes a` 批准后才能执行。可通过配置关闭此功能。
 
 ## 🎯 使用示例
 
@@ -151,6 +186,7 @@ astrbot_plugin_hermes_connector/
 ├── command_handlers.py      # 🎮 所有 /hermes 子命令
 ├── formatters.py            # 🎨 输出格式化
 ├── state_manager.py         # 📊 窗口会话状态管理
+├── pending_manager.py       # 🛡️ 待审批队列管理
 ├── notification_manager.py  # 🔔 通知推送
 ├── file_ops.py              # 📁 文件操作
 ├── metadata.yaml            # 📋 插件元数据

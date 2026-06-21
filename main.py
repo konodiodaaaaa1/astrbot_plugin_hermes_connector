@@ -19,7 +19,7 @@ from . import formatters
 
 @register("astrbot_plugin_hermes_connector", "konodiodaaaaa1",
           "连接 Hermes Agent，在聊天平台上远程操控 Hermes 会话，随时随地 Agent",
-          "1.0.0")
+          "1.1.0")
 class HermesConnectorPlugin(Star):
     
     def __init__(self, context: Context, config: AstrBotConfig):

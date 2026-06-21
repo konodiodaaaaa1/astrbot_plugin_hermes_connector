@@ -188,7 +188,7 @@ class HermesConnectorPlugin(Star):
             resolved = await self.cmd_handlers._resolve_session(event, str(idx))
             if resolved:
                 self.state_mgr.set_current_session(
-                    event.get_sender_id(), resolved["session"]["id"], idx
+                    event.unified_msg_origin, resolved["session"]["id"], idx
                 )
         
         await self.cmd_handlers.cmd_quick_send(event, content)
@@ -231,7 +231,7 @@ class HermesConnectorPlugin(Star):
         if not self._is_poke_event(event):
             return
         
-        window_id = event.get_sender_id()
+        window_id = event.unified_msg_origin
         items = self.pending_mgr.flatten_pending(window_id)
         if not items:
             return  # 无待审批，静默
@@ -266,9 +266,12 @@ class HermesConnectorPlugin(Star):
         """
         # 智能审批
         approval_mode = self.config.get("require_approval", "smart")
+        if not message or not message.strip():
+            yield "⚠️ 消息内容为空，请输入要发送的消息。"
+            return
         if approval_mode == "all":
             # 全部审批：每次都问
-            window_id = event.get_sender_id()
+            window_id = event.unified_msg_origin
             approved, reason = await self.pending_mgr.require_approval(
                 window_id, "hermes_send_message",
                 {"message": message[:50], "session_idx": session_idx},
@@ -282,7 +285,7 @@ class HermesConnectorPlugin(Star):
             # 智能审批：AstrBot 判断风险，低风险自动放行
             risk = classify_risk(message)
             if risk == "high":
-                window_id = event.get_sender_id()
+                window_id = event.unified_msg_origin
                 risk_summary = get_risk_summary(message)
                 approved, reason = await self.pending_mgr.require_approval(
                     window_id, "hermes_send_message",
@@ -304,7 +307,7 @@ class HermesConnectorPlugin(Star):
         yolo_mode = self.config.get("hermes_approval_mode", "normal") == "yolo"
         try:
             result = await chat(message, session_id=session["id"], timeout=120, yolo=yolo_mode)
-            self.state_mgr.set_current_session(event.get_sender_id(), result["session_id"], session_idx)
+            self.state_mgr.set_current_session(event.unified_msg_origin, result["session_id"], session_idx)
             
             # 自动汇报摘要
             response = result["response"]
@@ -318,7 +321,7 @@ class HermesConnectorPlugin(Star):
             yield str(e)
     
     @filter.llm_tool(name="hermes_create_session")
-    async def tool_create_session(self, event: AstrMessageEvent, prompt: str):
+    async def tool_create_session(self, event, prompt: str):
         """创建一个新的 Hermes Agent 会话，用于执行指定的任务。
 
         Args:
@@ -327,7 +330,7 @@ class HermesConnectorPlugin(Star):
         # 智能审批：创建会话属于中风险（消耗配额），smart 模式下也需要审批
         approval_mode = self.config.get("require_approval", "smart")
         if approval_mode in ("all", "smart"):
-            window_id = event.get_sender_id()
+            window_id = event.unified_msg_origin
             risk = classify_risk(prompt)
             if approval_mode == "all" or risk == "high":
                 risk_summary = get_risk_summary(prompt) if risk == "high" else "🟡 创建新会话"
@@ -344,7 +347,7 @@ class HermesConnectorPlugin(Star):
         yolo_mode = self.config.get("hermes_approval_mode", "normal") == "yolo"
         try:
             result = await chat(prompt, timeout=120, yolo=yolo_mode)
-            self.state_mgr.set_current_session(event.get_sender_id(), result["session_id"])
+            self.state_mgr.set_current_session(event.unified_msg_origin, result["session_id"])
             await self._refresh_sessions()
             
             # 自动汇报摘要
@@ -382,7 +385,7 @@ class HermesConnectorPlugin(Star):
                 return
             idx = None
         
-        self.state_mgr.set_current_session(event.get_sender_id(), session["id"], idx)
+        self.state_mgr.set_current_session(event.unified_msg_origin, session["id"], idx)
         preview = session.get("preview") or "无预览"
         title = session.get("title") or "未命名"
         yield f"已切换到会话 [{session['id'][:12]}...] {title} - {preview}"

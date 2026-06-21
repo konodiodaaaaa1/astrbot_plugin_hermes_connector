@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🤖 Hermes控制器
+# Hermes控制器
 
 _✨ 在 QQ/微信/Telegram 上远程操控 Hermes Agent ✨_
 

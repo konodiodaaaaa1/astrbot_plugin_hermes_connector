@@ -9,12 +9,13 @@ from astrbot.api.star import Context, Star, register
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.message_components import Plain, Poke
 
-from .hermes_cli_client import chat, list_sessions, check_health, HermesCliError
+from .hermes_cli_client import chat, list_sessions, check_health, get_session_detail, get_session_messages, HermesCliError
 from .command_handlers import CommandHandlers
 from .state_manager import StateManager
 from .notification_manager import NotificationManager
 from .pending_manager import PendingManager
 from .risk_checker import classify_risk, get_risk_summary
+from . import file_ops
 from . import formatters
 
 
@@ -418,3 +419,113 @@ class HermesConnectorPlugin(Star):
                 yield f"Hermes Agent 连接异常: {health['error']}"
         except Exception as e:
             yield f"检查失败: {e}"
+    
+    @filter.llm_tool(name="hermes_get_session_status")
+    async def tool_get_status(self, event: AstrMessageEvent, session_idx: int = 1):
+        """查看指定 Hermes 会话的详细信息，包括模型、消息数、创建时间等。
+
+        Args:
+            session_idx(number): 会话序号（从 1 开始），使用 hermes_list_sessions 查看
+        """
+        await self._refresh_sessions()
+        session = self.state_mgr.get_session_by_idx(session_idx)
+        if not session:
+            yield f"找不到序号 {session_idx} 的会话。请先调用 hermes_list_sessions 查看当前会话。"
+            return
+        
+        detail = await get_session_detail(session["id"], binary=self.config.get("hermes_command", "hermes"))
+        yield formatters.format_session_status(session["id"], detail)
+    
+    @filter.llm_tool(name="hermes_get_messages")
+    async def tool_get_messages(self, event: AstrMessageEvent, session_idx: int = 1, rounds: int = 1):
+        """查看指定 Hermes 会话的最近消息。
+
+        Args:
+            session_idx(number): 会话序号（从 1 开始）
+            rounds(number): 查看最近几轮对话（默认 1 轮）
+        """
+        await self._refresh_sessions()
+        session = self.state_mgr.get_session_by_idx(session_idx)
+        if not session:
+            yield f"找不到序号 {session_idx} 的会话。"
+            return
+        
+        try:
+            messages = await get_session_messages(session["id"], timeout=30, binary=self.config.get("hermes_command", "hermes"))
+            if not messages:
+                yield f"会话 [{session['id'][:12]}...] 暂无消息。"
+                return
+            
+            recent = messages[-(rounds * 4):]  # 粗略估计每轮 4 条
+            lines = [f"📜 **最近消息** ({session['id'][:12]}...)\n"]
+            for msg in recent:
+                role = msg.get("role", "unknown")
+                content = msg.get("content", "")
+                if isinstance(content, list):
+                    content = " ".join([c.get("text", "") for c in content if isinstance(c, dict)])
+                role_icon = {"user": "👤", "assistant": "🤖", "tool": "🔧"}.get(role, "❓")
+                content_preview = str(content)[:200]
+                lines.append(f"{role_icon} **{role}**: {content_preview}")
+            yield "\n".join(lines)
+        except Exception as e:
+            yield f"获取消息失败: {e}"
+    
+    @filter.llm_tool(name="hermes_abort_session")
+    async def tool_abort_session(self, event: AstrMessageEvent, session_idx: int = 1):
+        """中断指定的 Hermes 会话。用于停止正在运行的任务。
+
+        Args:
+            session_idx(number): 会话序号（从 1 开始）
+        """
+        await self._refresh_sessions()
+        session = self.state_mgr.get_session_by_idx(session_idx)
+        if not session:
+            yield f"找不到序号 {session_idx} 的会话。"
+            return
+        
+        try:
+            result = await chat("/stop", session_id=session["id"], timeout=30,
+                               binary=self.config.get("hermes_command", "hermes"),
+                               yolo=self.config.get("hermes_approval_mode", "normal") == "yolo")
+            yield f"⏹️ 已中断会话 [{session['id'][:12]}...]"
+        except Exception as e:
+            yield f"中断失败: {e}"
+    
+    @filter.llm_tool(name="hermes_list_files")
+    async def tool_list_files(self, event: AstrMessageEvent, path: str = "."):
+        """浏览 Hermes 工作目录中的文件。
+
+        Args:
+            path(string): 目录路径，默认为当前目录
+        """
+        files = await file_ops.list_files(path, binary=self.config.get("hermes_command", "hermes"))
+        if not files:
+            yield f"📁 `{path}`\n(空目录或无法访问)"
+            return
+        
+        lines = [f"📁 **{path}**", ""]
+        for f in files[:30]:
+            lines.append(f"- {f}")
+        if len(files) > 30:
+            lines.append(f"\n…还有 {len(files) - 30} 个文件")
+        yield "\n".join(lines)
+    
+    @filter.llm_tool(name="hermes_approve_all")
+    async def tool_approve_all(self, event: AstrMessageEvent):
+        """批准当前所有待审批的请求。当用户确认安全时使用此工具批量放行。"""
+        window_id = _safe_window_id(event)
+        result = await self.pending_mgr.approve_all(window_id)
+        if result:
+            yield result
+        else:
+            yield "📭 没有待审批的请求。"
+    
+    @filter.llm_tool(name="hermes_deny_all")
+    async def tool_deny_all(self, event: AstrMessageEvent):
+        """拒绝当前所有待审批的请求。"""
+        window_id = _safe_window_id(event)
+        result = await self.pending_mgr.deny_all(window_id)
+        if result:
+            yield result
+        else:
+            yield "📭 没有待审批的请求。"

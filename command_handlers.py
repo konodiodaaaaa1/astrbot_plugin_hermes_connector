@@ -12,7 +12,8 @@ from astrbot.api.message_components import Plain
 
 from .hermes_cli_client import (
     chat, list_sessions, check_health, get_session_detail,
-    get_session_messages, delete_session, prune_sessions, HermesCliError,
+    get_session_messages, delete_session, prune_sessions,
+    rename_session_cmd, HermesCliError,
 )
 from .formatters import (
     format_session_list, format_session_status, format_response,
@@ -68,7 +69,7 @@ class CommandHandlers:
         返回 {"session": dict, "idx": int} 或 None
         """
         state = self._get_state()
-        window_id = event.get_sender_id()
+        window_id = event.unified_msg_origin
         
         if not arg:
             # 使用当前会话
@@ -134,7 +135,7 @@ class CommandHandlers:
             return
         
         session = resolved["session"]
-        window_id = event.get_sender_id()
+        window_id = event.unified_msg_origin
         self._get_state().set_current_session(window_id, session["id"], resolved["idx"])
         
         preview = session.get("preview") or "无预览"
@@ -182,7 +183,7 @@ class CommandHandlers:
             )
             
             # 更新当前会话
-            window_id = event.get_sender_id()
+            window_id = event.unified_msg_origin
             self._get_state().set_current_session(window_id, result["session_id"], resolved["idx"])
             
             text = format_response(result["session_id"], truncate(result["response"]), result["is_new"])
@@ -219,7 +220,7 @@ class CommandHandlers:
                 yolo=self._yolo(),
             )
             
-            window_id = event.get_sender_id()
+            window_id = event.unified_msg_origin
             self._get_state().set_current_session(window_id, result["session_id"])
             
             text = format_response(result["session_id"], truncate(result["response"]))
@@ -249,7 +250,7 @@ class CommandHandlers:
             )
             
             # 更新状态
-            window_id = event.get_sender_id()
+            window_id = event.unified_msg_origin
             self._get_state().set_current_session(window_id, result["session_id"])
             
             # 刷新缓存
@@ -326,26 +327,23 @@ class CommandHandlers:
             await self.send_reply(event, "\n".join(lines))
         except Exception as e:
             await self.send_reply(event, format_error(str(e)))
-    
+
     async def cmd_rename(self, event: AstrMessageEvent, arg: str | None = None):
         """重命名当前会话"""
         if not arg:
             await self.send_reply(event, "⚠️ 请提供新名称。用法: `/hermes rename <名称>`")
             return
-        
+
         resolved = await self._resolve_session(event, None)
         if not resolved:
             await self.send_reply(event, "⚠️ 当前没有活跃会话。")
             return
-        
-        # 注意：Hermes CLI 目前不支持通过命令行重命名会话
-        # 可以通过发送消息来实现记录
+
         session_id = resolved["session"]["id"]
-        await self.send_reply(
-            event,
-            f"ℹ️ 会话 `{session_id[:16]}...` 将在下次使用时以新名称记录。\n"
-            f"(Hermes CLI 暂不支持远程重命名会话)"
+        ok, msg = await rename_session_cmd(
+            session_id, arg, binary=self._binary()
         )
+        await self.send_reply(event, msg)
     
     async def cmd_help(self, event: AstrMessageEvent, arg: str | None = None):
         """显示帮助"""
@@ -413,13 +411,13 @@ class CommandHandlers:
     
     async def cmd_pending(self, event: AstrMessageEvent, arg: str | None = None):
         """查看待审批请求"""
-        window_id = event.get_sender_id()
+        window_id = event.unified_msg_origin
         text = self.plugin.pending_mgr.get_summary(window_id)
         await self.send_reply(event, text)
     
     async def cmd_approve(self, event: AstrMessageEvent, arg: str | None = None):
         """批准待审批请求"""
-        window_id = event.get_sender_id()
+        window_id = event.unified_msg_origin
         
         if arg:
             # 批准单个
@@ -442,7 +440,7 @@ class CommandHandlers:
     
     async def cmd_deny(self, event: AstrMessageEvent, arg: str | None = None):
         """拒绝待审批请求"""
-        window_id = event.get_sender_id()
+        window_id = event.unified_msg_origin
         
         if arg:
             try:

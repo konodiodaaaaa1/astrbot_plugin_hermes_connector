@@ -31,13 +31,8 @@ def _approval_failed_msg(reason: str) -> str:
 
 
 def _safe_window_id(event) -> str:
-    """从 event 安全获取窗口ID。兼容 AstrMessageEvent 和 ContextWrapper"""
-    if hasattr(event, 'unified_msg_origin'):
-        return event.unified_msg_origin
-    try:
-        return str(event.get_sender_id())
-    except AttributeError:
-        return "internal_agent"
+    """从 event 安全获取窗口ID。"""
+    return event.unified_msg_origin
 
 
 def _safe_set_session(state_mgr, event, session_id, idx=None):
@@ -108,13 +103,9 @@ class HermesConnectorPlugin(Star):
     
     # ── 指令：会话管理 ───────────────────────────────
     
-    @hermes.command("list")
-    async def cmd_list(self, event: AstrMessageEvent):
-        await self.cmd_handlers.cmd_list(event, None)
-    
     @hermes.command("list", alias={"ls"})
-    async def cmd_list_all(self, event: AstrMessageEvent, all: str = ""):
-        await self.cmd_handlers.cmd_list(event, all)
+    async def cmd_list(self, event: AstrMessageEvent, all: str = ""):
+        await self.cmd_handlers.cmd_list(event, all or None)
     
     @hermes.command("status", alias={"s"})
     async def cmd_status(self, event: AstrMessageEvent, session: str = ""):
@@ -334,7 +325,13 @@ class HermesConnectorPlugin(Star):
         
         yolo_mode = self.config.get("hermes_approval_mode", "normal") == "yolo"
         try:
-            result = await chat(message, session_id=session["id"], timeout=120, yolo=yolo_mode)
+            result = await chat(
+                message, session_id=session["id"],
+                workdir=self.config.get("hermes_workdir", "") or None,
+                model=self.config.get("hermes_model", "") or None,
+                timeout=120, yolo=yolo_mode,
+                binary=self.config.get("hermes_command", "hermes"),
+            )
             _safe_set_session(self.state_mgr, event, result["session_id"], session_idx)
             
             # 自动汇报摘要
@@ -374,7 +371,13 @@ class HermesConnectorPlugin(Star):
         
         yolo_mode = self.config.get("hermes_approval_mode", "normal") == "yolo"
         try:
-            result = await chat(prompt, timeout=120, yolo=yolo_mode)
+            result = await chat(
+                prompt,
+                workdir=self.config.get("hermes_workdir", "") or None,
+                model=self.config.get("hermes_model", "") or None,
+                timeout=120, yolo=yolo_mode,
+                binary=self.config.get("hermes_command", "hermes"),
+            )
             _safe_set_session(self.state_mgr, event, result["session_id"])
             await self._refresh_sessions()
             
@@ -494,7 +497,10 @@ class HermesConnectorPlugin(Star):
             return
         
         try:
-            result = await chat("/stop", session_id=session["id"], timeout=30,
+            result = await chat("/stop", session_id=session["id"],
+                               workdir=self.config.get("hermes_workdir", "") or None,
+                               model=self.config.get("hermes_model", "") or None,
+                               timeout=30,
                                binary=self.config.get("hermes_command", "hermes"),
                                yolo=self.config.get("hermes_approval_mode", "normal") == "yolo")
             yield f"⏹️ 已中断会话 [{session['id'][:12]}...]"

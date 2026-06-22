@@ -11,7 +11,6 @@ import logging
 import os
 import re
 import subprocess
-import tempfile
 import time
 from typing import Optional
 
@@ -74,18 +73,24 @@ def _parse_session_id(output: str) -> str | None:
 
 
 def _parse_response_text(output: str) -> str:
-    """从 Hermes 输出中提取回复文本（去除 session_id 行）"""
-    lines = output.split("\n")
-    # 找到 session_id 行之后的内容
-    start_idx = None
-    for i, line in enumerate(lines):
-        if SESSION_ID_RE.match(line.strip()):
-            start_idx = i + 1
-            break
-    if start_idx is None:
-        return output.strip()
-    text = "\n".join(lines[start_idx:]).strip()
-    return text
+    """从 Hermes 输出中提取回复文本。
+
+    在 --quiet 模式下，stdout 仅包含纯回复文本（session_id 在 stderr），
+    所以直接返回 stdout 全文即可。
+    """
+    return output.strip()
+
+
+def _parse_session_id_from_stderr(stderr: str) -> str | None:
+    """从 stderr 中解析 session_id。
+
+    Hermes --quiet 模式下，session_id 输出在 stderr，格式为:
+        \\nsession_id: 20260622_193701_b2ffc7
+    """
+    m = SESSION_ID_RE.search(stderr)
+    if m:
+        return m.group(1)
+    return None
 
 
 def _parse_sessions_list(output: str) -> list[dict]:
@@ -210,10 +215,11 @@ async def chat(message: str, *, session_id: str | None = None,
     if code != 0:
         error_msg = stderr.strip() or stdout.strip()
         raise HermesCliError(f"Hermes 返回错误 (code={code}): {error_msg[:300]}")
-    
-    sid = _parse_session_id(stdout)
+
+    # --quiet 模式: session_id 在 stderr，回复文本在 stdout
+    sid = _parse_session_id_from_stderr(stderr)
     response = _parse_response_text(stdout)
-    
+
     return {
         "session_id": sid or session_id or "unknown",
         "response": response or "(无输出)",
@@ -237,39 +243,31 @@ async def get_session_messages(session_id: str, timeout: int = 30,
                                 binary: str | None = None) -> list[dict]:
     """
     获取会话的消息历史。
-    通过导出会话 JSONL 并解析消息。
+    通过 `hermes sessions export --session-id <id> -` 导出 JSONL 到 stdout 并解析。
     返回消息列表，每条包含 role 和 content。
     """
-    # 导出到临时文件
-    tmpfile = os.path.join(tempfile.gettempdir(), f"hermes-export-{session_id}.jsonl")
     try:
         code, stdout, stderr = await _run_hermes(
-            ["sessions", "export", session_id],
+            ["sessions", "export", "--session-id", session_id, "-"],
             timeout=timeout, binary=binary
         )
-        # 导出写入的是当前目录，但文件名=session_id
-        export_path = os.path.join(os.getcwd(), session_id)
-        if os.path.exists(export_path):
-            with open(export_path, "r", encoding="utf-8") as f:
-                for line in f:
-                    try:
-                        data = json.loads(line)
-                        if data.get("id") == session_id:
-                            return data.get("messages", [])
-                    except json.JSONDecodeError:
-                        continue
+        if code != 0:
+            logger.warning(f"导出会话失败 (code={code}): {stderr[:200]}")
+            return []
+        for line in stdout.split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                data = json.loads(line)
+                if data.get("id") == session_id:
+                    return data.get("messages", [])
+            except json.JSONDecodeError:
+                continue
         return []
     except Exception as e:
         logger.warning(f"获取会话消息失败: {e}")
         return []
-    finally:
-        # 清理导出文件
-        for p in [session_id, tmpfile]:
-            try:
-                if os.path.exists(p):
-                    os.remove(p)
-            except Exception:
-                pass
 
 
 async def check_health(binary: str | None = None) -> dict:
@@ -293,32 +291,30 @@ async def get_session_detail(session_id: str, timeout: int = 15,
                               binary: str | None = None) -> dict | None:
     """
     获取会话详细信息。
-    通过导出 JSONL 查找对应会话的完整信息。
+    通过 `hermes sessions export --session-id <id> -` 导出 JSONL 到 stdout 并解析。
     """
     try:
         code, stdout, stderr = await _run_hermes(
-            ["sessions", "export", session_id],
+            ["sessions", "export", "--session-id", session_id, "-"],
             timeout=timeout, binary=binary
         )
-        export_path = os.path.join(os.getcwd(), session_id)
-        if os.path.exists(export_path):
-            with open(export_path, "r", encoding="utf-8") as f:
-                for line in f:
-                    try:
-                        data = json.loads(line)
-                        if data.get("id") == session_id:
-                            return data
-                    except json.JSONDecodeError:
-                        continue
+        if code != 0:
+            logger.warning(f"导出会话详情失败 (code={code}): {stderr[:200]}")
+            return None
+        for line in stdout.split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                data = json.loads(line)
+                if data.get("id") == session_id:
+                    return data
+            except json.JSONDecodeError:
+                continue
         return None
-    except Exception:
+    except Exception as e:
+        logger.warning(f"获取会话详情失败: {e}")
         return None
-    finally:
-        try:
-            if os.path.exists(session_id):
-                os.remove(session_id)
-        except Exception:
-            pass
 
 
 async def switch_session(session_id: str, timeout: int = 15,

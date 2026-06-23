@@ -71,7 +71,7 @@ def _safe_set_session(state_mgr, event, session_id, idx=None):
 
 @register("astrbot_plugin_hermes_connector", "konodiodaaaaa1",
           "连接 Hermes Agent，在聊天平台上远程操控 Hermes 会话，随时随地 Agent",
-          "1.2.5")
+          "1.2.6")
 class HermesConnectorPlugin(Star):
     
     def __init__(self, context: Context, config: AstrBotConfig):
@@ -85,8 +85,22 @@ class HermesConnectorPlugin(Star):
         self.quick_prefix = self.config.get("quick_prefix", ">")
         self.poke_approve = self.config.get("poke_approve", True)
         self.progress_monitor = ProgressMonitor(context, config)
+        # 持有后台任务引用，防止被 GC 回收
+        self._bg_tasks: set[asyncio.Task] = set()
         
         logger.info(f"Hermes Connector 已加载。快捷前缀: '{self.quick_prefix}'")
+    
+    def _track_bg_task(self, task: asyncio.Task) -> None:
+        """持有后台任务引用防止 GC，并在完成时记录异常"""
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_task_done)
+    
+    def _bg_task_done(self, task: asyncio.Task) -> None:
+        self._bg_tasks.discard(task)
+        if not task.cancelled():
+            exc = task.exception()
+            if exc:
+                logger.warning(f"后台任务异常: {exc}", exc_info=exc)
     
     async def initialize(self):
         """插件初始化"""
@@ -355,9 +369,10 @@ class HermesConnectorPlugin(Star):
         # 非阻塞模式：后台发送 + 进度监控
         if self.progress_monitor.enabled:
             # 立即返回，后台执行
-            asyncio.create_task(
+            task = asyncio.create_task(
                 self._background_chat(event, message, sid, session_idx)
             )
+            self._track_bg_task(task)
             yield f"✅ 已提交到 Hermes 会话 [{sid[:16]}...]，后台执行中。我会在有进展时通知你。"
             return
 
@@ -391,13 +406,12 @@ class HermesConnectorPlugin(Star):
         """
         yolo_mode = self.config.get("hermes_approval_mode", "normal") == "yolo"
         binary = self.config.get("hermes_command", "hermes")
-        max_timeout = self.config.get("max_timeout", 120)
 
         # 启动进度监控
         monitor_task = self.progress_monitor.start_monitoring(session_id, event)
 
         try:
-            # 后台执行 hermes chat，给予充足超时（最长 30 分钟）
+            # 后台执行 hermes chat，给予充足超时（最长 30 分钟，浏览器/研究类任务需要 10+ 分钟）
             result = await chat(
                 message, session_id=session_id,
                 workdir=self.config.get("hermes_workdir", "") or None,
@@ -461,9 +475,40 @@ class HermesConnectorPlugin(Star):
             logger.warning(f"后台 chat 异常: {e}")
 
     async def _background_create(self, event, prompt: str):
-        """后台创建新 Hermes 会话 + 进度监控"""
+        """后台创建新 Hermes 会话 + 进度监控
+
+        新会话的 session_id 在 chat() 返回前是未知的，
+        所以这里启动一个检测任务并行轮询 sessions list，
+        发现新会话后立即 start_monitoring。
+        """
         yolo_mode = self.config.get("hermes_approval_mode", "normal") == "yolo"
         binary = self.config.get("hermes_command", "hermes")
+
+        # 获取现有会话 ID 集合，用于检测新会话
+        existing_ids = set()
+        try:
+            sessions = await list_sessions(binary=binary)
+            existing_ids = set(s["id"] for s in sessions)
+        except Exception:
+            pass
+
+        # 启动新会话检测任务（独立于 chat 阻塞调用）
+        async def _detect_new_session():
+            for _ in range(24):  # 最多尝试 2 分钟
+                await asyncio.sleep(5)
+                try:
+                    sessions = await list_sessions(binary=binary)
+                    for s in sessions:
+                        if s["id"] not in existing_ids:
+                            self.progress_monitor.start_monitoring(s["id"], event)
+                            logger.info(f"检测到新会话 {s['id'][:16]}...，已启动进度监控")
+                            return s["id"]
+                except Exception:
+                    pass
+            logger.warning("新会话检测超时（2分钟内未发现新会话），进度监控未启动")
+            return None
+
+        detect_task = asyncio.create_task(_detect_new_session())
 
         try:
             # 创建新会话（session_id=None），给予充足超时
@@ -477,6 +522,14 @@ class HermesConnectorPlugin(Star):
             sid = result["session_id"]
             _safe_set_session(self.state_mgr, event, sid)
             await self._refresh_sessions()
+
+            # 停止检测任务
+            if not detect_task.done():
+                detect_task.cancel()
+                try:
+                    await detect_task
+                except asyncio.CancelledError:
+                    pass
 
             # 提取最终回复
             response = result["response"]
@@ -499,6 +552,7 @@ class HermesConnectorPlugin(Star):
             if len(response) > max_len:
                 response = response[:max_len] + f"\n\n...（截断至 {max_len} 字符）"
 
+            # 停止监控（避免重复完成通知）
             self.progress_monitor.stop_monitoring(sid)
 
             final_text = (
@@ -509,6 +563,8 @@ class HermesConnectorPlugin(Star):
             await self._push_to_user(event, final_text)
 
         except HermesCliError as e:
+            if not detect_task.done():
+                detect_task.cancel()
             err_str = str(e)
             if "超时" in err_str:
                 await self._push_to_user(
@@ -519,8 +575,11 @@ class HermesConnectorPlugin(Star):
             else:
                 await self._push_to_user(event, f"❌ Hermes 创建失败: {err_str[:300]}")
         except asyncio.CancelledError:
-            pass
+            if not detect_task.done():
+                detect_task.cancel()
         except Exception as e:
+            if not detect_task.done():
+                detect_task.cancel()
             logger.warning(f"后台 create 异常: {e}")
 
     async def _push_to_user(self, event, text: str):
@@ -567,11 +626,12 @@ class HermesConnectorPlugin(Star):
 
         # 非阻塞模式：后台发送 + 进度监控
         if self.progress_monitor.enabled:
-            # 用 _background_chat 统一处理：后台执行 + 监控 + 完成后推送
-            # 创建新会话时 session_id=None，_background_chat 会通过 chat() 获取新 sid
-            asyncio.create_task(
+            # 用 _background_create 统一处理：后台执行 + 监控 + 完成后推送
+            # 创建新会话时 session_id=None，_background_create 会通过 chat() 获取新 sid
+            task = asyncio.create_task(
                 self._background_create(event, prompt)
             )
+            self._track_bg_task(task)
             yield f"⏳ 正在创建 Hermes 新会话...后台执行中，有进展时会通知你。"
             return
 

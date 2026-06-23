@@ -88,6 +88,7 @@ class ProgressMonitor:
         self.register(session_id, event)
         bar = self._bars[session_id]
         bar.task = asyncio.create_task(self._monitor_loop(session_id))
+        logger.info(f"进度监控已启动: {session_id[:16]}... (轮询间隔={self.poll_interval}s, token阈值={self.token_threshold})")
         return bar.task
 
     def is_monitored(self, session_id: str) -> bool:
@@ -111,15 +112,17 @@ class ProgressMonitor:
         bar = self._bars[session_id]
         binary = self.config.get("hermes_command", "hermes")
         poll_interval = self.poll_interval
+        poll_count = 0
 
         try:
             while not bar.finished:
                 await asyncio.sleep(poll_interval)
+                poll_count += 1
 
                 # 轮询会话状态
                 detail = await self._poll_session(session_id, binary)
                 if detail is None:
-                    # 会话不存在或导出失败
+                    logger.debug(f"轮询 #{poll_count} {session_id[:16]}... 导出失败，跳过")
                     continue
 
                 # 更新进度
@@ -135,9 +138,15 @@ class ProgressMonitor:
                 bar.last_token_count = total_tokens
                 bar.last_poll_at = time.time()
 
+                logger.debug(
+                    f"轮询 #{poll_count} {session_id[:16]}... "
+                    f"tokens={total_tokens:,} msgs={msg_count} ended={ended_at is not None}"
+                )
+
                 # 检查是否已完成
                 if ended_at is not None:
                     bar.finished = True
+                    logger.info(f"检测到会话完成: {session_id[:16]}... (轮询 #{poll_count})")
                     # 推送完成通知
                     await self._push_completion(session_id, detail)
                     break
@@ -147,6 +156,7 @@ class ProgressMonitor:
                 if (current_threshold >= self.token_threshold
                         and current_threshold not in bar.reported_thresholds):
                     bar.reported_thresholds.add(current_threshold)
+                    logger.info(f"触发 token 阈值汇报: {session_id[:16]}... (阈值={current_threshold:,})")
                     await self._push_threshold_summary(session_id, detail)
                     bar.last_reported_msg_count = msg_count
                     continue
@@ -155,19 +165,20 @@ class ProgressMonitor:
                 idle_seconds = time.time() - bar.last_activity_at
                 if idle_seconds >= self.idle_heartbeat and msg_count == bar.last_reported_msg_count:
                     bar.last_reported_msg_count = msg_count  # 避免重复心跳
+                    logger.info(f"触发空闲心跳: {session_id[:16]}... (空闲={int(idle_seconds)}s)")
                     await self._push_heartbeat(session_id, detail, idle_seconds)
 
         except asyncio.CancelledError:
-            logger.debug(f"进度监控已取消: {session_id}")
+            logger.debug(f"进度监控已取消: {session_id[:16]}... (共轮询 {poll_count} 次)")
         except Exception as e:
-            logger.warning(f"进度监控异常 ({session_id}): {e}")
+            logger.warning(f"进度监控异常 ({session_id[:16]}...): {e}", exc_info=True)
 
     async def _poll_session(self, session_id: str, binary: str) -> dict | None:
         """轮询 Hermes 会话状态（轻量：只取 session 级字段）"""
         try:
             code, stdout, stderr = await _run_hermes(
                 ["sessions", "export", "--session-id", session_id, "-"],
-                timeout=15, binary=binary
+                timeout=30, binary=binary
             )
             if code != 0:
                 return None

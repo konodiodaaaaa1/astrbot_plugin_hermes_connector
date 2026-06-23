@@ -3,6 +3,7 @@ Hermes 指令处理器
 处理所有 /hermes 子命令
 """
 
+import asyncio
 import logging
 from typing import Any
 
@@ -167,7 +168,17 @@ class CommandHandlers:
             return
         
         session_id = resolved["session"]["id"]
-        
+
+        # 非阻塞模式：后台发送 + 进度监控
+        if self.plugin.progress_monitor.enabled:
+            await self.send_reply(event, f"✅ 已提交到 Hermes 会话 [{session_id[:16]}...]，后台执行中。")
+            task = asyncio.create_task(
+                self.plugin._background_chat(event, message, session_id, resolved.get("idx"))
+            )
+            self.plugin._track_bg_task(task)
+            return
+
+        # 阻塞模式（fallback）
         try:
             # 发送消息
             await self.send_reply(event, f"⏳ 正在发送到 {session_id[:16]}...")
@@ -209,6 +220,17 @@ class CommandHandlers:
                 return
         
         session_id = resolved["session"]["id"]
+
+        # 非阻塞模式：后台发送 + 进度监控
+        if self.plugin.progress_monitor.enabled:
+            await self.send_reply(event, f"✅ 已提交到 Hermes 会话 [{session_id[:16]}...]，后台执行中。")
+            task = asyncio.create_task(
+                self.plugin._background_chat(event, message, session_id, resolved.get("idx"))
+            )
+            self.plugin._track_bg_task(task)
+            return
+
+        # 阻塞模式（fallback）
         try:
             result = await chat(
                 message,
@@ -237,6 +259,16 @@ class CommandHandlers:
             )
             return
         
+        # 非阻塞模式：后台创建 + 进度监控
+        if self.plugin.progress_monitor.enabled:
+            await self.send_reply(event, f"⏳ 正在创建 Hermes 新会话...后台执行中，有进展时会通知你。")
+            task = asyncio.create_task(
+                self.plugin._background_create(event, prompt)
+            )
+            self.plugin._track_bg_task(task)
+            return
+
+        # 阻塞模式（fallback）
         await self.send_reply(event, f"⏳ 正在创建 Hermes 新会话...")
         
         try:

@@ -1,0 +1,14 @@
+[Unit]
+Description=Hermes Hub
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/hermes-hub
+ExecStart=/opt/hermes-hub/run.sh
+EnvironmentFile=/etc/default/hermes-hub
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

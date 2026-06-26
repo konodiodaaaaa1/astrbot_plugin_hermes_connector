@@ -1,6 +1,40 @@
 {
+  "remote_mode": {
+    "description": "运行模式：local（本地 CLI） / hub（远程 Hermes Hub）",
+    "type": "string",
+    "default": "local",
+    "options": [
+      "local",
+      "hub"
+    ]
+  },
+  "hub_endpoint": {
+    "description": "Hermes Hub 访问地址，例如 https://hermes-hub.example.com",
+    "type": "string",
+    "default": ""
+  },
+  "access_token": {
+    "description": "Hermes Hub 的 Access Token",
+    "type": "string",
+    "default": ""
+  },
+  "hub_timeout": {
+    "description": "Hub 请求超时时间（秒）",
+    "type": "int",
+    "default": 120
+  },
+  "cf_access_client_id": {
+    "description": "Cloudflare Zero Trust Access Client ID（可选）",
+    "type": "string",
+    "default": ""
+  },
+  "cf_access_client_secret": {
+    "description": "Cloudflare Zero Trust Access Client Secret（可选）",
+    "type": "string",
+    "default": ""
+  },
   "hermes_command": {
-    "description": "Hermes CLI 命令路径",
+    "description": "本地模式下 Hermes CLI 命令路径",
     "type": "string",
     "default": "hermes",
     "hint": "例如: hermes 或 /usr/local/bin/hermes"
@@ -32,7 +66,10 @@
     "description": "输出模式：simple（只返回最终回复） / verbose（包含中间思考）",
     "type": "string",
     "default": "simple",
-    "options": ["simple", "verbose"]
+    "options": [
+      "simple",
+      "verbose"
+    ]
   },
   "auto_create_session": {
     "description": "收到快捷前缀消息时，如果没有当前会话则自动创建新会话",
@@ -49,7 +86,11 @@
     "description": "审批模式。all=每次都需要审批, smart=智能审批(低风险自动放行), off=不审批",
     "type": "string",
     "default": "smart",
-    "options": ["all", "smart", "off"],
+    "options": [
+      "all",
+      "smart",
+      "off"
+    ],
     "hint": "smart 模式：读取/搜索等低风险操作自动放行，删除/覆盖等高风险操作需要确认"
   },
   "poke_approve": {
@@ -80,7 +121,10 @@
     "description": "Hermes CLI 审批模式。yolo=跳过所有危险命令确认，normal=默认（需确认），plan=规划模式（不执行）",
     "type": "string",
     "default": "normal",
-    "options": ["normal", "yolo"],
+    "options": [
+      "normal",
+      "yolo"
+    ],
     "hint": "yolo 模式会自动批准 Hermes 侧的敏感操作（文件写入、命令执行等），请谨慎使用"
   },
   "progress_monitor": {
@@ -106,5 +150,15 @@
     "type": "int",
     "default": 120,
     "hint": "如果 Hermes 持续无新消息超过此秒数，推送一次心跳提醒"
+  },
+  "hub_verify_ssl": {
+    "description": "校验 Hermes Hub HTTPS 证书。使用自签名/IP 证书时请关闭",
+    "type": "bool",
+    "default": false
+  },
+  "https_port": {
+    "description": "Hermes Hub HTTPS 端口（仅远端部署参考，插件端使用 hub_endpoint 指定端口）",
+    "type": "int",
+    "default": 9443
   }
 }

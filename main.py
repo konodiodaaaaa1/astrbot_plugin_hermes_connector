@@ -12,6 +12,8 @@ from astrbot.api import AstrBotConfig, logger
 from astrbot.api.message_components import Plain, Poke
 
 from .hermes_cli_client import chat, list_sessions, check_health, get_session_detail, get_session_messages, delete_session, prune_sessions, rename_session_cmd, HermesCliError
+from . import hermes_cli_client as _hcc
+from .hermes_cli_client import subscribe_events
 from .command_handlers import CommandHandlers
 from .state_manager import StateManager
 from .notification_manager import NotificationManager
@@ -71,9 +73,17 @@ def _safe_set_session(state_mgr, event, session_id, idx=None):
 
 @register("astrbot_plugin_hermes_connector", "konodiodaaaaa1",
           "连接 Hermes Agent，在聊天平台上远程操控 Hermes 会话，随时随地 Agent",
-          "1.2.6")
+          "1.3.0")
 class HermesConnectorPlugin(Star):
     
+    async def _hub_event_listener(self):
+        """订阅 Hermes Hub 的 SSE 事件。"""
+        try:
+            async for event, data in subscribe_events():
+                logger.debug(f"Hermes Hub event: {event} {data}")
+        except Exception as e:
+            logger.warning(f"Hub 事件监听异常: {e}")
+
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
         self.config = config
@@ -87,6 +97,11 @@ class HermesConnectorPlugin(Star):
         self.progress_monitor = ProgressMonitor(context, config)
         # 持有后台任务引用，防止被 GC 回收
         self._bg_tasks: set[asyncio.Task] = set()
+
+        # 根据配置选择本地 CLI 还是远程 Hub
+        _hcc.configure_service(self.config)
+        if _hcc.is_hub_mode():
+            self._track_bg_task(asyncio.create_task(self._hub_event_listener()))
         
         logger.info(f"Hermes Connector 已加载。快捷前缀: '{self.quick_prefix}'")
     

@@ -15,7 +15,7 @@ from astrbot.api.event import MessageChain
 from astrbot.core.platform import Platform
 from astrbot.core.platform.message_session import MessageSession
 
-from .hermes_cli_client import get_session_detail, get_session_messages, HermesCliError, _run_hermes
+from .hermes_cli_client import get_session_detail, get_session_messages, HermesCliError
 
 logger = logging.getLogger("astrbot")
 

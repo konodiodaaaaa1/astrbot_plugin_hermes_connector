@@ -1,257 +1,296 @@
-<div align="center">
+# Hermes 控制器 (AstrBot 插件)
 
-# Hermes控制器
+连接 [Hermes Agent](https://github.com/NousResearch/hermes-agent) 与 [AstrBot](https://github.com/Soulter/AstrBot)，让你在 QQ、微信、Telegram 等任意聊天平台上直接操控 Hermes Agent 会话。
 
-_✨ 在 QQ/微信/Telegram 上远程操控 Hermes Agent ✨_
+本插件支持两种运行模式：
 
-[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
-[![AstrBot](https://img.shields.io/badge/AstrBot-3.4%2B-orange.svg)](https://github.com/Soulter/AstrBot)
-[![GitHub](https://img.shields.io/badge/GitHub-konodiodaaaaa1-blue)](https://github.com/konodiodaaaaa1/astrbot_plugin_hermes_connector)
-
-</div>
+- **本地模式**：AstrBot 与 Hermes 运行在同一台机器上，插件通过 subprocess 直接调用本地 `hermes` CLI。
+- **Hub 远程模式**：AstrBot 通过 HTTPS + SSE 连接远端 **Hermes Hub**，Hermes 实际运行在远程服务器上。日常运行无需暴露 SSH，仅需暴露受 HTTPS 保护的 Hub 端口。
 
 ---
 
-## 📦 这是什么？
+## 目录
 
-**Hermes控制器** 是一个 AstrBot 插件，让你在 **QQ、微信、Telegram** 等聊天平台上，远程操控你电脑上运行的 [Hermes Agent](https://github.com/NousResearch/hermes-agent)（由 Nous Research 开发的开源 AI Agent 框架）。
+- [功能特性](#功能特性)
+- [架构概览](#架构概览)
+- [安装插件](#安装插件)
+- [模式一：本地模式（默认）](#模式一本地模式默认)
+- [模式二：Hub 远程模式](#模式二hub-远程模式)
+- [常用命令](#常用命令)
+- [配置项说明](#配置项说明)
+- [更新与维护](#更新与维护)
+- [致谢](#致谢)
 
-**一句话总结**：Hermes Agent 的远程遥控器。摸鱼时也能让 Hermes 继续干活。
+---
 
-## ✨ 功能
+## 功能特性
 
-- **远程会话管理** — 创建、切换、查看 Hermes Agent 会话
-- **远程发消息** — 在聊天窗口直接给 Hermes 下发任务
-- **实时查看回复** — Hermes 返回的内容直接出现在你的聊天窗口
-- **快捷发送** — 支持 `> 消息` 前缀快捷发送，无需打指令
-- **自然语言操控** — 通过 AstrBot 的 LLM Function Calling，用自然语言管理 Hermes
-- **审批安全系统** — 敏感操作需要用户确认，防止误操作。支持全部批准、单条批准、全部拒绝
-- **Hermes 审批模式切换** — 可配置 yolo 模式跳过 Hermes 侧的危险操作确认
-- **会话持久化** — 所有会话通过 Hermes 内置 session 系统自动管理
-- **文件浏览** — 远程查看 Hermes 工作目录文件
+- 💬 在聊天窗口直接与 Hermes Agent 对话
+- 📋 列出、切换、创建、重命名、删除 Hermes 会话
+- 🚀 快捷发送前缀（默认 `> `），无需输入完整命令
+- 🧠 支持自定义默认模型和系统提示词
+- ✅ 审批模式：`all` / `smart` / `off` 三档可选
+- 📈 后台进度监控，自动汇报 token 消耗和执行摘要
+- 🌐 远程模式：通过 Hermes Hub 把 Hermes 部署到独立服务器
+- 🔒 Hub 模式使用 JWT 鉴权 + HTTPS，SSE 实时推送事件
 
-## 🔧 工作原理
+---
+
+## 架构概览
+
+### 本地模式
 
 ```
-你的聊天窗口         你的电脑（本地）
-(QQ/微信/TG)         Hermes Agent 运行中
-     │                     │
-     ▼                     ▼
-  AstrBot ──→ Hermes控制器插件 ──→ Hermes CLI (subprocess)
-                                         │
-                                    hermes chat -q "msg" --quiet
-                                         │
-                                    Hermes Agent
-                                    (AI 处理)
+QQ / 微信 / Telegram
+        ↕
+    AstrBot
+        ↕
+ Hermes Connector 插件
+        ↕
+  hermes CLI (subprocess)
+        ↕
+   Hermes Agent
 ```
 
-插件通过 **subprocess** 调用本地 `hermes` CLI，使用 `--quiet` 模式获取纯净的输出，无需修改 Hermes 配置即可工作。
+### Hub 远程模式
 
-## 🚀 安装
+```
+QQ / 微信 / Telegram
+        ↕
+    AstrBot
+        ↕
+ Hermes Connector 插件
+        ↕   HTTPS + SSE
+   Hermes Hub (FastAPI)
+        ↕   本地 subprocess / docker exec
+   hermes CLI
+        ↕
+   Hermes Agent
+```
+
+---
+
+## 安装插件
+
+### 方式一：通过 GitHub 链接安装（推荐）
+
+1. 打开 AstrBot 管理面板 → 插件 → 安装插件。
+2. 输入仓库地址：
+   ```
+   https://github.com/ziyue67/astrbot_plugin_hermes_connector
+   ```
+3. 等待安装完成，启用插件并进入配置页。
+
+### 方式二：手动安装
+
+1. 从本仓库 [Releases](https://github.com/ziyue67/astrbot_plugin_hermes_connector/releases) 下载 `astrbot_plugin_hermes_connector.zip`。
+2. 解压到 AstrBot 的 `data/plugins/` 目录下。
+3. 重启 AstrBot，启用插件。
+
+---
+
+## 模式一：本地模式（默认）
+
+适用场景：AstrBot 和 Hermes 装在同一台服务器或电脑上。
 
 ### 前置条件
 
-1. **Hermes Agent** 已安装并可正常运行
-   ```bash
-   hermes --version
-   # 应显示版本号
-   ```
+- 已安装 Hermes CLI，并且可以在终端执行：
+  ```bash
+  hermes --version
+  ```
 
-2. **AstrBot** v3.4+ 已安装运行
+### 配置
 
-### 方法一：插件市场安装（推荐）
+在插件配置页：
 
-在 AstrBot WebUI 插件市场搜索 **Hermes控制器**，一键安装。
+- `remote_mode` → `local`
+- `hermes_command` → `hermes`（如果不在 PATH 中，填写绝对路径）
+- 其他项保持默认即可
 
-### 方法二：手动安装
+### 验证
 
-1. 下载 `astrbot_plugin_hermes_connector.zip`
-2. 在 AstrBot WebUI → 插件管理 → 上传安装
-3. 重启 AstrBot
-4. 在插件配置页填写配置
-
-## ⚙️ 配置
-
-| 配置项 | 说明 | 默认值 |
-|--------|------|--------|
-| `hermes_command` | Hermes CLI 命令路径 | `hermes` |
-| `hermes_workdir` | Hermes 工作目录 | 空（使用 Hermes 默认） |
-| `hermes_model` | 创建新会话默认模型 | 空（使用 Hermes 默认） |
-| `max_timeout` | 命令超时时间（秒） | 120 |
-| `quick_prefix` | 快捷发送前缀 | `>` |
-| `output_mode` | 输出模式：`simple` / `verbose` | `simple` |
-| `auto_create_session` | 快捷发送时自动创建新会话 | `true` |
-| `require_approval` | LLM 工具操作审批模式：`all`=每次审批, `smart`=智能审批(低风险自动放行), `off`=关闭 | `smart` |
-| `poke_approve` | 戳一戳机器人自动审批（仅 QQ NapCat） | `true` |
-| `approval_timeout` | 审批超时时间（秒） | `60` |
-| `hermes_approval_mode` | Hermes CLI 审批模式。`normal`=默认需确认，`yolo`=跳过危险操作确认 | `normal` |
-| `progress_monitor` | 后台进度监控：Hermes 任务执行时自动轮询并汇报 | `true` |
-| `progress_poll_interval` | 进度轮询间隔（秒） | `30` |
-| `progress_token_threshold` | Token 阈值汇报间隔（每消耗多少 token 汇报一次） | `100000` |
-| `progress_idle_heartbeat` | 空闲心跳间隔（秒）| `120` |
-| `default_system_prompt` | 新会话默认系统提示词 | 空（使用 Hermes 默认） |
-
-### Hermes 审批模式说明
-
-插件有两层审批系统，各司其职：
-
-| 层级 | 配置项 | 作用 |
-|------|--------|------|
-| **AstrBot 层** | `require_approval` | 发消息/创建会话前，先在聊天窗口问你"批准吗？" |
-| **Hermes 层** | `hermes_approval_mode` | Hermes 执行敏感操作（rm、文件写入等）时是否自动批准 |
+在聊天窗口发送：
 
 ```
-示例：你想让 Hermes 清理临时文件
-                         AstrBot 层             Hermes 层
-"给会话1发消息: 清/tmp"  →  "批准吗？"           →
-                            你: /hermes a        Hermes: "要执行 rm -rf ?"
-                                                normal模式 → 等你确认
-                                                yolo模式  → 自动放行
+/hermes health
 ```
 
-## ⌨️ 指令
-
-### 会话管理
-
-| 指令 | 说明 |
-|------|------|
-| `/hermes list` | 查看所有会话 |
-| `/hermes sw <序号或ID>` | 切换当前会话 |
-| `/hermes status` | 查看当前会话状态 |
-| `/hermes msg [轮数]` | 查看最近消息 |
-| `/hermes create <提示词>` | 创建新会话 |
-| `/hermes rename <名称>` | 重命名当前会话 |
-
-### 消息发送
-
-| 指令 | 说明 |
-|------|------|
-| `/hermes to <序号> <内容>` | 发送到指定会话 |
-| `/hermes send <内容>` | 发送到当前会话 |
-| `> 内容` | 快捷发送到当前会话 |
-| `>N 内容` | 快捷发送到第 N 个会话 |
-
-### 其他
-
-| 指令 | 说明 |
-|------|------|
-| `/hermes health` | 检查 Hermes 连接 |
-| `/hermes files <路径>` | 浏览文件 |
-| `/hermes abort` | 中断当前会话 |
-| `/hermes help` | 显示帮助 |
-
-### 审批操作
-
-| 指令 | 说明 |
-|------|------|
-| `/hermes pending` (`/hermes p`) | 查看待审批请求 |
-| `/hermes a` | 批准全部待审批 |
-| `/hermes allow <序号>` | 批准指定序号 |
-| `/hermes deny` | 拒绝全部 |
-| `/hermes deny <序号>` | 拒绝指定序号 |
-| 戳一戳机器人 🤳 | 批准全部待审批（仅 QQ NapCat，需开启 `poke_approve`） |
-
-> 🤳 在 QQ 上戳一戳机器人 = 快捷批准所有待审批请求，摸鱼神器
-
-## 🧠 自然语言（LLM 工具）
-
-在 AstrBot 管理面板开启工具的插件后，可以用自然语言操控：
-
-| 你说 | 插件会 |
-|------|--------|
-| "帮我看看有哪些 Hermes 会话" | 调用 `hermes_list_sessions` 列出会话 |
-| "给第 1 个会话发消息：继续优化代码" | 调用 `hermes_send_message` → ⚠️ **需审批** |
-| "创建一个新会话，写个 Flask 应用" | 调用 `hermes_create_session` → ⚠️ **需审批** |
-| "切换到第 2 个会话" | 调用 `hermes_switch_session` 切换 |
-| "Hermes 还活着吗？" | 调用 `hermes_check_health` 检查状态 |
-
-> ⚠️ 当 `require_approval=true`（默认）时，`hermes_send_message` 和 `hermes_create_session` 会触发审批通知，你需要使用 `/hermes a` 批准后才能执行。可通过配置关闭此功能。
-
-## 🎯 使用示例
-
-```
-👤 /hermes create 帮我写一个 Python 爬虫
-🤖 ⏳ 正在创建 Hermes 新会话...
-🤖 ✅ 已创建会话
-   Session: 20260622_014252_...
-   好的，我来写一个 Python 爬虫...
-
-👤 /hermes to 1 加上异常处理
-🤖 ⏳ 正在发送...
-🤖 已添加异常处理...
-
-👤 > 再加个 User-Agent 随机池
-🤖 已添加 User-Agent 随机池...
-```
-
-## 🏗️ 插件结构
-
-```
-astrbot_plugin_hermes_connector/
-├── main.py                  # 🎯 插件入口：指令组 + LLM 工具
-├── hermes_cli_client.py     # 🔗 Hermes CLI 异步通信层
-├── command_handlers.py      # 🎮 所有 /hermes 子命令
-├── formatters.py            # 🎨 输出格式化
-├── state_manager.py         # 📊 窗口会话状态管理
-├── pending_manager.py       # 🛡️ 待审批队列管理
-├── notification_manager.py  # 🔔 通知推送
-├── file_ops.py              # 📁 文件操作
-├── metadata.yaml            # 📋 插件元数据
-├── _conf_schema.json        # ⚙️ 插件配置 schema
-├── README.md                # 📖 本文档
-└── docs/install.md          # 安装指南
-```
-
-## 📄 许可证
-
-MIT
-
-## 🙏 致谢
-
-- [Hermes Agent](https://github.com/NousResearch/hermes-agent) — Nous Research 开源 AI Agent 框架
-- [AstrBot](https://github.com/Soulter/AstrBot) — 跨平台聊天机器人框架
-- [HAPI Vibe Coding 遥控器](https://github.com/LiJinHao999/astrbot_plugin_hapi_connector) — 本插件的设计参考
+看到 Hermes 版本号即表示连接成功。
 
 ---
 
-## 📋 更新日志
+## 模式二：Hub 远程模式
 
-### v1.2.5
+适用场景：Hermes 运行在独立远程服务器，AstrBot 只通过 HTTPS 与 Hub 通信。
 
-**新功能：后台进度监控**
+### 1. 在远程服务器部署 Hermes
 
-- 新增非阻塞发送模式：`hermes_send_message` 和 `hermes_create_session` 发送后立即返回，Hermes 在后台执行，不阻塞 AstrBot 的其他对话
-- 新增后台轮询监控：每 30s 轮询 Hermes 会话状态（token 用量、消息数、工具调用数）
-- 新增 LLM 总结汇报：每消耗 10 万 token 时，截取 Hermes 最近活动片段，调用 AstrBot 的 LLM 生成 2-3 句自然语言进度总结，推送到聊天窗口
-- 新增空闲心跳：Hermes 持续无新消息超过阈值时间时推送心跳提醒
-- 新增任务完成通知：检测到会话结束时自动推送最终结果
-- 新增配置项：`progress_monitor` / `progress_poll_interval` / `progress_token_threshold` / `progress_idle_heartbeat`
+选择以下任意一种方式：
 
-**Bug 修复**
+**原生安装 Hermes CLI**
 
-- 修复 `main.py` 缺少 `import asyncio` 导致 `asyncio.create_task` 报错
+```bash
+hermes --version
+```
 
-### v1.2.0
+**使用 Docker 运行 Hermes**
 
-**核心 Bug 修复（7 项）**
+```bash
+docker run -d --name hermes \
+  -v hermes-data:/opt/data \
+  nousresearch/hermes-agent:latest \
+  sleep infinity
+```
 
-- **修复新建会话后无法继续对话的致命 Bug**：Hermes CLI `--quiet` 模式下 `session_id` 输出在 stderr 而非 stdout，导致解析失败、session_id 始终为 `unknown`，后续所有操作报 `Session not found`
-- **修复 LLM 工具全面崩溃的致命 Bug**：AstrBot v4.26+ 的 `_PermissionGuardedTool` 将 LLM 工具参数从 `AstrMessageEvent` 替换为 `ContextWrapper`，导致 `event.unified_msg_origin` 和 `event.send()` 全部报 `AttributeError`。新增 `_safe_event()` 兼容层自动提取真实 event
-- **修复会话消息/详情获取失败**：`hermes sessions export` 命令用法错误，把 session_id 当文件路径。改为正确使用 `--session-id <id> -` 导出到 stdout
-- **修复指令与 LLM 工具状态不互通**：指令处理器用 `get_sender_id()`，LLM 工具用 `unified_msg_origin`，统一为 `unified_msg_origin`
-- **修复 `/hermes rename` 指令空操作**：之前只返回"不支持"提示，现在真正调用 `hermes sessions rename`
-- **修复 `/hermes list` 重复注册冲突**：两个方法同时注册 `@hermes.command("list")`
-- **修复 LLM 工具忽略 workdir/model 配置**：`tool_send_message`、`tool_create_session`、`tool_abort_session` 调用 `chat()` 时未传递配置参数
+如果你已有现成的 Hermes 容器（例如通过 1Panel 部署），记下容器名，后续安装 Hub 时通过 `HERMES_CONTAINER` 指定即可。
 
-### v1.1.0
+### 2. 部署 Hermes Hub
 
-- 新增智能审批系统（风险分级：高/中/低）
-- 新增戳一戳审批（QQ NapCat）
-- 新增会话删除/批量清理/重命名指令及 LLM 工具
-- 新增 `auto_report` 自动汇报摘要
-- 新增 `hermes_approval_mode` 配置（normal/yolo）
+从 Releases 下载 `hermes-hub.tar.gz`，一键安装：
 
-### v1.0.0
+```bash
+curl -L -o /tmp/hermes-hub.tar.gz \
+  https://github.com/ziyue67/astrbot_plugin_hermes_connector/releases/download/v1.3.3/hermes-hub.tar.gz
+sudo mkdir -p /opt/hermes-hub
+sudo tar -xzf /tmp/hermes-hub.tar.gz -C /opt/hermes-hub
+sudo bash /opt/hermes-hub/install.sh
+```
 
-- 初始版本：远程会话管理、消息发送、文件浏览、LLM 工具集成
+更多细节（HTTPS、环境变量、systemd、升级脚本）请参考 [hub/README.md](./hub/README.md)。
+
+### 3. 暴露到公网（必须 HTTPS）
+
+推荐方式：
+
+- Nginx / Caddy / OpenResty 反向代理
+- Cloudflare Tunnel
+- Tailscale / 内网穿透
+
+**不要直接以 HTTP 形式暴露在公网。**
+
+### 4. 配置 AstrBot 插件
+
+在插件配置页：
+
+- `remote_mode` → `hub`
+- `hub_endpoint` → `https://your-hermes-hub.example.com`
+- `access_token` → Hub 安装时生成的 Token（查看 `/etc/default/hermes-hub`）
+- `hub_verify_ssl` → 使用正规证书开 `true`；IP/自签名证书建议关 `false`
+
+### 5. 验证
+
+```
+/hermes health
+```
+
+看到远端 Hermes 版本号即表示远程连接成功。
+
+---
+
+## 常用命令
+
+| 命令 | 说明 |
+|------|------|
+| `/hermes help` | 显示帮助 |
+| `/hermes health` | 检查 Hermes / Hub 连接状态 |
+| `/hermes list` | 列出所有会话 |
+| `/hermes status [序号]` | 查看指定会话状态 |
+| `/hermes create <提示词>` | 创建新会话并开始任务 |
+| `/hermes to <序号> <消息>` | 发送消息到指定会话 |
+| `/hermes send <消息>` | 发送消息到当前会话 |
+| `/hermes sw <序号>` | 切换当前会话 |
+| `/hermes msg` | 查看当前会话最近消息 |
+| `/hermes abort` | 中断当前会话执行 |
+| `/hermes rename <新名字>` | 重命名当前会话 |
+| `/hermes delete <序号>` | 删除指定会话 |
+| `/hermes prune` | 清理已完成的会话 |
+| `/hermes files [路径]` | 浏览文件目录 |
+| `/hermes export [序号]` | 导出会话为 Markdown |
+| `/hermes models` | 列出可用模型 |
+| `/hermes config` | 查看当前配置 |
+
+### 快捷发送
+
+- `> 你好` → 发送到当前会话
+- `>1 你好` → 发送到第 1 个会话
+- 触发方式可在配置里通过 `quick_prefix` 修改
+
+### 审批交互
+
+当 Hermes 执行需要确认的操作时，机器人会发送待审批列表。你可以：
+
+- 回复 `y` / `yes` / `确认` 批准全部
+- 回复 `n` / `no` / `拒绝` 拒绝全部
+- 回复序号（如 `1 3`）只批准第 1、3 条
+
+---
+
+## 配置项说明
+
+| 配置项 | 类型 | 默认值 | 说明 |
+|--------|------|--------|------|
+| `remote_mode` | string | `local` | `local` 本地 CLI / `hub` 远程 Hub |
+| `hub_endpoint` | string | 空 | Hub 地址，如 `https://your-hub.example.com` |
+| `access_token` | string | 空 | Hub 鉴权 Token |
+| `hub_timeout` | int | 120 | Hub 请求超时（秒） |
+| `hub_verify_ssl` | bool | `false` | 是否验证 Hub HTTPS 证书 |
+| `cf_access_client_id` | string | 空 | Cloudflare Access Client ID（可选） |
+| `cf_access_client_secret` | string | 空 | Cloudflare Access Client Secret（可选） |
+| `hermes_command` | string | `hermes` | 本地模式下 Hermes CLI 路径 |
+| `hermes_workdir` | string | 空 | Hermes 工作目录 |
+| `hermes_model` | string | 空 | 新会话默认模型 |
+| `max_timeout` | int | 120 | 命令最大超时（秒） |
+| `quick_prefix` | string | `>` | 快捷发送前缀 |
+| `output_mode` | string | `simple` | `simple` 仅最终回复 / `verbose` 含思考过程 |
+| `auto_create_session` | bool | `true` | 快捷前缀无会话时自动创建 |
+| `default_system_prompt` | string | 空 | 新会话默认系统提示词 |
+| `require_approval` | string | `smart` | `all` / `smart` / `off` |
+| `poke_approve` | bool | `true` | 戳一戳自动审批全部（QQ NapCat） |
+| `approval_timeout` | int | 60 | 审批超时时间（秒） |
+| `auto_report` | bool | `true` | 任务完成自动汇报摘要 |
+| `auto_report_max_length` | int | 500 | 汇报摘要最大长度 |
+| `hermes_approval_mode` | string | `normal` | `normal` / `yolo`（谨慎使用） |
+| `progress_monitor` | bool | `true` | 后台进度监控 |
+| `progress_poll_interval` | int | 30 | 进度轮询间隔（秒） |
+| `progress_token_threshold` | int | 100000 | 每消耗多少 token 汇报一次 |
+| `progress_idle_heartbeat` | int | 120 | 空闲心跳间隔（秒） |
+
+---
+
+## 更新与维护
+
+### 更新插件
+
+在 AstrBot 插件管理页面点击更新，或重新下载 Release 中的 `astrbot_plugin_hermes_connector.zip` 覆盖安装。
+
+### 更新 Hermes Hub
+
+在 Hub 服务器执行：
+
+```bash
+sudo bash /opt/hermes-hub/update-hub.sh
+```
+
+### 更新 Hermes Agent（Docker）
+
+```bash
+sudo python3 /opt/hermes-hub/update-hermes.py <容器名> --yes
+```
+
+升级失败会自动回滚。更多细节见 [hub/README.md](./hub/README.md)。
+
+---
+
+## 致谢
+
+- 原版插件：[konodiodaaaaa1/astrbot_plugin_hermes_connector](https://github.com/konodiodaaaaa1/astrbot_plugin_hermes_connector)
+- Hub 架构参考：[LiJinHao999/astrbot_plugin_hapi_connector](https://github.com/LiJinHao999/astrbot_plugin_hapi_connector)
+- [Hermes Agent](https://github.com/NousResearch/hermes-agent)
+- [AstrBot](https://github.com/Soulter/AstrBot)
+
+---
+
+## License
+
+[MIT](./LICENSE)

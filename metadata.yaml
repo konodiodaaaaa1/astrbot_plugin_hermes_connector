@@ -3,7 +3,7 @@ display_name: Hermes控制器
 desc: "连接 Hermes Agent，借助 AstrBot 在任意聊天平台（QQ、微信、Telegram 等）上操控 Hermes Agent 会话。支持远程发送消息、查看会话状态、切换模型、文件操作等。"
 version: v1.3.3
 author: konodiodaaaaa1
-repo: https://github.com/ziyue67/astrbot_plugin_hermes_connector
+repo: https://github.com/konodiodaaaaa1/astrbot_plugin_hermes_connector
 keywords:
   - hermes
   - agent

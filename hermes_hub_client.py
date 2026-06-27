@@ -5,7 +5,6 @@
 import time
 import asyncio
 import json
-import logging
 
 import aiohttp
 from astrbot.api import logger
@@ -193,13 +192,15 @@ class AsyncHermesHubClient:
             "source": source,
         })
 
-    async def subscribe_events(self):
+    async def subscribe_events(self, sse_timeout: int = 90):
         """订阅 SSE 事件流，返回 (event, data) 异步生成器。"""
         await self._ensure_session()
         token = await self._token_mgr.get_token()
         url = f"{self._endpoint}/api/events"
         headers = {"Authorization": f"Bearer {token}", "Accept": "text/event-stream"}
-        async with self._session.get(url, headers=headers, timeout=None) as resp:
+        # 给 SSE 长连接设置一个 read timeout，触发后可由上层重连
+        aio_timeout = aiohttp.ClientTimeout(total=None, sock_read=sse_timeout)
+        async with self._session.get(url, headers=headers, timeout=aio_timeout) as resp:
             resp.raise_for_status()
             event_name = None
             async for line in resp.content:

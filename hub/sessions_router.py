@@ -2,7 +2,7 @@
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from .auth import get_current_token
 from .hermes_parser import parse_export_line, parse_response_text, parse_session_id, parse_sessions_list
@@ -115,7 +115,7 @@ async def send_message(
 @router.post("/sessions/{session_id}/stop")
 async def stop_session(session_id: str, token: dict = Depends(get_current_token)):
     code, stdout, stderr = await run_hermes(
-        ["chat", "/stop", "--resume", session_id], timeout=30
+        ["chat", "-q", "/stop", "--resume", session_id], timeout=30
     )
     if code != 0:
         raise HTTPException(status_code=500, detail=stderr[:500] or stdout[:500])

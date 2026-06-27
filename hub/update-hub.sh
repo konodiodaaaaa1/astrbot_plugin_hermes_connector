@@ -4,7 +4,7 @@ set -e
 
 INSTALL_DIR="${HERMES_HUB_DIR:-/opt/hermes-hub}"
 BACKUP_DIR="${HERMES_HUB_BACKUP_DIR:-/opt/hermes-hub-backups}"
-RELEASE_URL="${HERMES_HUB_RELEASE:-https://github.com/ziyue67/astrbot_plugin_hermes_connector/releases/download/v1.3.0/hermes-hub.tar.gz}"
+RELEASE_URL="${HERMES_HUB_RELEASE:-https://github.com/ziyue67/astrbot_plugin_hermes_connector/releases/download/v1.3.3/hermes-hub.tar.gz}"
 
 mkdir -p "$BACKUP_DIR"
 timestamp=$(date +%Y%m%d-%H%M%S)

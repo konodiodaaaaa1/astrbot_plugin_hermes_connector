@@ -175,26 +175,8 @@ class ProgressMonitor:
 
     async def _poll_session(self, session_id: str, binary: str) -> dict | None:
         """轮询 Hermes 会话状态（轻量：只取 session 级字段）"""
-        try:
-            code, stdout, stderr = await _run_hermes(
-                ["sessions", "export", "--session-id", session_id, "-"],
-                timeout=30, binary=binary
-            )
-            if code != 0:
-                return None
-            for line in stdout.split("\n"):
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    data = json.loads(line)
-                    return data
-                except json.JSONDecodeError:
-                    continue
-            return None
-        except Exception as e:
-            logger.debug(f"轮询会话 {session_id} 失败: {e}")
-            return None
+        # 通过兼容 local/hub 的服务接口取会话详情，不再直接调用内部 _run_hermes
+        return await get_session_detail(session_id, timeout=30, binary=binary)
 
     async def _get_recent_messages_text(self, session_id: str, binary: str, count: int = 5) -> str:
         """获取最近几条消息的文本片段"""

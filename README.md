@@ -235,8 +235,6 @@ sudo bash /opt/hermes-hub/install.sh
 | `access_token` | string | 空 | Hub 鉴权 Token |
 | `hub_timeout` | int | 120 | Hub 请求超时（秒） |
 | `hub_verify_ssl` | bool | `false` | 是否验证 Hub HTTPS 证书 |
-| `cf_access_client_id` | string | 空 | Cloudflare Access Client ID（可选） |
-| `cf_access_client_secret` | string | 空 | Cloudflare Access Client Secret（可选） |
 | `hermes_command` | string | `hermes` | 本地模式下 Hermes CLI 路径 |
 | `hermes_workdir` | string | 空 | Hermes 工作目录 |
 | `hermes_model` | string | 空 | 新会话默认模型 |

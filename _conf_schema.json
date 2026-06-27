@@ -23,16 +23,6 @@
     "type": "int",
     "default": 120
   },
-  "cf_access_client_id": {
-    "description": "Cloudflare Zero Trust Access Client ID（可选）",
-    "type": "string",
-    "default": ""
-  },
-  "cf_access_client_secret": {
-    "description": "Cloudflare Zero Trust Access Client Secret（可选）",
-    "type": "string",
-    "default": ""
-  },
   "hermes_command": {
     "description": "本地模式下 Hermes CLI 命令路径",
     "type": "string",
@@ -155,10 +145,5 @@
     "description": "校验 Hermes Hub HTTPS 证书。使用自签名/IP 证书时请关闭",
     "type": "bool",
     "default": false
-  },
-  "https_port": {
-    "description": "Hermes Hub HTTPS 端口（仅远端部署参考，插件端使用 hub_endpoint 指定端口）",
-    "type": "int",
-    "default": 9443
   }
 }

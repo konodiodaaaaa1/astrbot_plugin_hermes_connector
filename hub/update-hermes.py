@@ -14,6 +14,8 @@ import re
 import shutil
 import subprocess
 import sys
+import shlex
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -208,7 +210,6 @@ def verify(container_name_or_id):
         print("无法自动验证：未找到容器名")
         return
     print("等待容器启动...")
-    import time
     for i in range(10):
         time.sleep(2)
         out = run(["docker", "exec", container_name_or_id, "hermes", "--version"], check=False, capture=True)

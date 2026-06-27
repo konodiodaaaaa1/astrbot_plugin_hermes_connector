@@ -5,7 +5,7 @@ import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
-from fastapi import Depends, FastAPI, Request
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -63,7 +63,7 @@ async def auth(body: AuthBody):
     if not ACCESS_TOKEN:
         raise Exception("Access token not initialized")
     if body.accessToken != ACCESS_TOKEN:
-        return {"ok": False, "error": "Invalid access token"}, 401
+        raise HTTPException(status_code=401, detail="Invalid access token")
     token = create_jwt(body.accessToken)
     return {"ok": True, "token": token, "expires_in": JWT_EXPIRE_SECONDS}
 

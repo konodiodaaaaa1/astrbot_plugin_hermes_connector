@@ -381,9 +381,9 @@ class HubHermesService(HermesService):
         except Exception:
             return False
 
-    def get_event_stream(self):
+    def get_event_stream(self, sse_timeout: int = 90):
         """返回 SSE 异步生成器 (event, data)。"""
-        return self._client.subscribe_events()
+        return self._client.subscribe_events(sse_timeout=sse_timeout)
 
     async def close(self):
         await self._client.close()
@@ -477,10 +477,10 @@ async def switch_session(session_id: str, timeout: int = 15,
     return await _service.switch_session(session_id, timeout=timeout, binary=binary)
 
 
-async def subscribe_events():
+async def subscribe_events(sse_timeout: int = 90):
     """仅当 Hub 模式时可用。"""
     if isinstance(_service, HubHermesService):
-        async for event, data in _service.get_event_stream():
+        async for event, data in _service.get_event_stream(sse_timeout=sse_timeout):
             yield event, data
     else:
         # 本地模式没有 SSE，返回空迭代

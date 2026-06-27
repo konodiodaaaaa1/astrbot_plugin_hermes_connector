@@ -73,16 +73,41 @@ def _safe_set_session(state_mgr, event, session_id, idx=None):
 
 @register("astrbot_plugin_hermes_connector", "konodiodaaaaa1",
           "连接 Hermes Agent，在聊天平台上远程操控 Hermes 会话，随时随地 Agent",
-          "1.3.0")
+          "1.3.3")
 class HermesConnectorPlugin(Star):
     
     async def _hub_event_listener(self):
-        """订阅 Hermes Hub 的 SSE 事件。"""
-        try:
-            async for event, data in subscribe_events():
-                logger.debug(f"Hermes Hub event: {event} {data}")
-        except Exception as e:
-            logger.warning(f"Hub 事件监听异常: {e}")
+        """订阅 Hermes Hub 的 SSE 事件，带自动重连与事件分发。"""
+        while True:
+            try:
+                async for event, data in subscribe_events(sse_timeout=90):
+                    logger.debug(f"Hermes Hub event: {event} {data}")
+                    await self._dispatch_hub_event(event, data)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.warning(f"Hub 事件监听异常，5 秒后重连: {e}")
+            try:
+                await asyncio.sleep(5)
+            except asyncio.CancelledError:
+                raise
+
+    async def _dispatch_hub_event(self, event: str, data: dict):
+        """根据 SSE 事件类型触发插件侧状态同步。"""
+        if event in ("session_created", "session_deleted", "sessions_pruned"):
+            try:
+                await self._refresh_sessions()
+            except Exception:
+                pass
+        elif event == "session_stopped" and data:
+            sid = data.get("session_id")
+            if sid and self.progress_monitor.is_monitored(sid):
+                self.progress_monitor.stop_monitoring(sid)
+        elif event in ("message_sent", "session_renamed"):
+            try:
+                await self._refresh_sessions()
+            except Exception:
+                pass
 
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)

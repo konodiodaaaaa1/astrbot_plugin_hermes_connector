@@ -1,7 +1,6 @@
 """Hermes Hub 鉴权：access_token 换 JWT。"""
 import os
 import secrets
-import time
 from datetime import datetime, timedelta, timezone
 
 from fastapi import Depends, HTTPException, status

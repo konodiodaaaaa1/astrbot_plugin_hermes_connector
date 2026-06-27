@@ -43,11 +43,12 @@ fi
 if [[ -n "${HERMES_SSL_CERTFILE:-}" ]]; then
   echo "HERMES_SSL_CERTFILE=${HERMES_SSL_CERTFILE}" >> /etc/default/hermes-hub
 fi
+chmod 600 /etc/default/hermes-hub
 
 # 生成启动包装脚本（支持可选 HTTPS）
 cat > "$INSTALL_DIR/run.sh" <<'RUNEOF'
 #!/usr/bin/env bash
-cd /opt/hermes-hub
+cd __INSTALL_DIR__
 . /etc/default/hermes-hub
 ARGS=(--host "${HERMES_HOST}" --port "${HERMES_PORT}")
 if [[ -n "${HERMES_SSL_KEYFILE:-}" && -n "${HERMES_SSL_CERTFILE:-}" ]]; then
@@ -55,9 +56,10 @@ if [[ -n "${HERMES_SSL_KEYFILE:-}" && -n "${HERMES_SSL_CERTFILE:-}" ]]; then
 fi
 exec .venv/bin/uvicorn hub.main:app "${ARGS[@]}"
 RUNEOF
+sed -i "s|__INSTALL_DIR__|$INSTALL_DIR|g" "$INSTALL_DIR/run.sh"
 chmod +x "$INSTALL_DIR/run.sh"
 
-cp hermes-hub.service /etc/systemd/system/
+sed "s|/opt/hermes-hub|$INSTALL_DIR|g" hermes-hub.service > /etc/systemd/system/hermes-hub.service
 systemctl daemon-reload
 systemctl enable --now "$SERVICE_NAME"
 

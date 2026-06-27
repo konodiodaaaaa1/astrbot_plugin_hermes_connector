@@ -129,6 +129,13 @@ async def _run_hermes(args: list[str], timeout: int = 120,
         return proc.returncode or 0, stdout.decode("utf-8", errors="replace"), stderr.decode("utf-8", errors="replace")
     except FileNotFoundError:
         raise HermesCliError("Hermes CLI 未找到。请确保已安装 Hermes 或在配置中指定正确路径。")
+    except asyncio.CancelledError:
+        try:
+            proc.kill()
+            await proc.wait()
+        except Exception:
+            pass
+        raise
     except Exception as e:
         raise HermesCliError(f"Hermes 调用失败: {e}")
 

@@ -61,7 +61,7 @@ async def health():
 @app.post("/api/auth")
 async def auth(body: AuthBody):
     if not ACCESS_TOKEN:
-        raise Exception("Access token not initialized")
+        raise HTTPException(status_code=500, detail="Access token not initialized")
     if body.accessToken != ACCESS_TOKEN:
         raise HTTPException(status_code=401, detail="Invalid access token")
     token = create_jwt(body.accessToken)

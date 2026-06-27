@@ -510,6 +510,7 @@ class HermesConnectorPlugin(Star):
                 await self._push_to_user(event, f"❌ Hermes 执行失败: {err_str[:300]}")
         except asyncio.CancelledError:
             self.progress_monitor.stop_monitoring(session_id)
+            raise
         except Exception as e:
             self.progress_monitor.stop_monitoring(session_id)
             logger.warning(f"后台 chat 异常: {e}")
@@ -617,6 +618,7 @@ class HermesConnectorPlugin(Star):
         except asyncio.CancelledError:
             if not detect_task.done():
                 detect_task.cancel()
+            raise
         except Exception as e:
             if not detect_task.done():
                 detect_task.cancel()

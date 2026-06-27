@@ -1,18 +1,18 @@
-"""
-Hermes CLI 客户端
-- 通过 subprocess 调用 Hermes CLI
-- 解析输出获取 session_id 和回复文本
-- 支持新会话和继续会话
-"""
+"""Hermes 客户端入口。
 
+根据配置决定走本地 subprocess 还是远程 Hermes Hub。
+- local 模式：保持原来的 CLI 调用和输出解析。
+- hub 模式：通过 HTTP/HTTPS 调用远程 Hermes Hub 的 REST API，并支持 SSE 事件。
+"""
 import asyncio
 import json
 import logging
 import os
 import re
 import subprocess
-import time
 from typing import Optional
+
+from .hermes_hub_client import AsyncHermesHubClient
 
 logger = logging.getLogger("astrbot")
 
@@ -20,25 +20,12 @@ logger = logging.getLogger("astrbot")
 SESSION_ID_RE = re.compile(r"session_id:\s*(\S+)")
 RESUME_RE = re.compile(r"↻ Resumed session (\S+)")
 
-# Hermes 会话列表输出的表头/分隔行
 LIST_HEADER = "Title                            Preview                                  Last Active   ID"
-LIST_SEPARATOR = "─" * 118  # 分隔线
-
-# JSONL 导出字段
-EXPORT_SESSION_ID = "id"
-EXPORT_MESSAGES = "messages"
-EXPORT_MESSAGE_ROLE = "role"
-EXPORT_MESSAGE_CONTENT = "content"
-EXPORT_STARTED_AT = "started_at"
-EXPORT_ENDED_AT = "ended_at"
-EXPORT_MODEL = "model"
-EXPORT_SOURCE = "source"
-EXPORT_TITLE = "title"
-EXPORT_MESSAGE_COUNT = "message_count"
+LIST_SEPARATOR = "─" * 118
 
 
 class HermesCliError(Exception):
-    """Hermes CLI 调用错误"""
+    """Hermes 调用错误"""
     pass
 
 
@@ -48,7 +35,6 @@ def _find_hermes_binary(custom_path: str | None = None) -> str:
         if os.path.isfile(custom_path):
             return custom_path
         logger.warning(f"配置的 Hermes 路径 '{custom_path}' 不存在，尝试系统 PATH")
-    # 尝试 which/where
     for cmd in ("hermes", "hermes.exe"):
         try:
             result = subprocess.run(
@@ -61,66 +47,44 @@ def _find_hermes_binary(custom_path: str | None = None) -> str:
                     return path
         except Exception:
             pass
-    return "hermes"  # fallback
+    return "hermes"
 
 
 def _parse_session_id(output: str) -> str | None:
-    """从 Hermes 输出中解析 session_id"""
     m = SESSION_ID_RE.search(output)
-    if m:
-        return m.group(1)
-    return None
+    return m.group(1) if m else None
 
 
 def _parse_response_text(output: str) -> str:
-    """从 Hermes 输出中提取回复文本。
-
-    在 --quiet 模式下，stdout 仅包含纯回复文本（session_id 在 stderr），
-    所以直接返回 stdout 全文即可。
-    """
     return output.strip()
 
 
 def _parse_session_id_from_stderr(stderr: str) -> str | None:
-    """从 stderr 中解析 session_id。
-
-    Hermes --quiet 模式下，session_id 输出在 stderr，格式为:
-        \\nsession_id: 20260622_193701_b2ffc7
-    """
     m = SESSION_ID_RE.search(stderr)
-    if m:
-        return m.group(1)
-    return None
+    return m.group(1) if m else None
 
 
 def _parse_sessions_list(output: str) -> list[dict]:
     """解析 `hermes sessions list` 的输出"""
     sessions = []
     lines = output.strip().split("\n")
-    
-    # 找到表头后的数据行
     header_idx = None
     for i, line in enumerate(lines):
         if line.strip().startswith("Title"):
             header_idx = i
             break
-    
     if header_idx is None:
         return sessions
-    
-    data_start = header_idx + 2  # 跳过表头和分隔线
+    data_start = header_idx + 2
     for line in lines[data_start:]:
         line = line.strip()
         if not line or line.startswith(LIST_SEPARATOR[0]):
             continue
-        
-        # 解析定宽列：Title(32) Preview(41) Last Active(14) ID
         try:
             title = line[:32].strip()
             preview = line[32:73].strip()
             last_active = line[73:87].strip()
             session_id = line[87:].strip()
-            
             if session_id:
                 sessions.append({
                     "id": session_id,
@@ -130,12 +94,10 @@ def _parse_sessions_list(output: str) -> list[dict]:
                 })
         except Exception:
             pass
-    
     return sessions
 
 
 def _build_env(workdir: str | None = None) -> dict:
-    """构建 Hermes 运行环境变量"""
     env = os.environ.copy()
     if workdir:
         env["HERMES_CWD"] = workdir
@@ -145,10 +107,9 @@ def _build_env(workdir: str | None = None) -> dict:
 async def _run_hermes(args: list[str], timeout: int = 120,
                        workdir: str | None = None,
                        binary: str | None = None) -> tuple[int, str, str]:
-    """运行 Hermes CLI 命令，返回 (returncode, stdout, stderr)"""
+    """运行本地 Hermes CLI 命令，返回 (returncode, stdout, stderr)"""
     cmd = [binary or "hermes"] + args
     logger.debug(f"运行 Hermes: {' '.join(cmd)}")
-    
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
@@ -164,234 +125,364 @@ async def _run_hermes(args: list[str], timeout: int = 120,
         except asyncio.TimeoutError:
             proc.kill()
             await proc.wait()
-            raise HermesCliError(
-                f"Hermes 命令超时（{timeout}s）: {' '.join(cmd[:3])}..."
-            )
-        
+            raise HermesCliError(f"Hermes 命令超时（{timeout}s）")
         return proc.returncode or 0, stdout.decode("utf-8", errors="replace"), stderr.decode("utf-8", errors="replace")
     except FileNotFoundError:
-        raise HermesCliError(
-            f"Hermes CLI 未找到。请确保已安装 Hermes 或在配置中指定正确路径。"
-        )
+        raise HermesCliError("Hermes CLI 未找到。请确保已安装 Hermes 或在配置中指定正确路径。")
     except Exception as e:
         raise HermesCliError(f"Hermes 调用失败: {e}")
 
 
-# ── 对外接口 ──────────────────────────────────────────
+# ── 服务抽象 ──────────────────────────────────────────
+
+class HermesService:
+    """Hermes 调用服务抽象"""
+
+    async def health(self, binary: str | None = None) -> dict:
+        raise NotImplementedError
+
+    async def chat(self, message: str, *, session_id: str | None = None,
+                   workdir: str | None = None, model: str | None = None,
+                   timeout: int = 120, quiet: bool = True,
+                   binary: str | None = None, yolo: bool = False) -> dict:
+        raise NotImplementedError
+
+    async def list_sessions(self, timeout: int = 15, binary: str | None = None) -> list[dict]:
+        raise NotImplementedError
+
+    async def get_session_detail(self, session_id: str, timeout: int = 15,
+                                  binary: str | None = None) -> dict | None:
+        raise NotImplementedError
+
+    async def get_session_messages(self, session_id: str, timeout: int = 30,
+                                    binary: str | None = None) -> list[dict]:
+        raise NotImplementedError
+
+    async def delete_session(self, session_id: str, *, timeout: int = 15,
+                              binary: str | None = None, force: bool = False) -> tuple[bool, str]:
+        raise NotImplementedError
+
+    async def prune_sessions(self, *, older_than: int = 90, source: str | None = None,
+                              timeout: int = 30, binary: str | None = None,
+                              force: bool = False) -> tuple[bool, str]:
+        raise NotImplementedError
+
+    async def rename_session_cmd(self, session_id: str, title: str, *,
+                                  timeout: int = 15, binary: str | None = None) -> tuple[bool, str]:
+        raise NotImplementedError
+
+    async def switch_session(self, session_id: str, timeout: int = 15,
+                              binary: str | None = None) -> bool:
+        raise NotImplementedError
+
+
+class LocalHermesService(HermesService):
+    """本地 Hermes CLI 模式（原来逻辑）"""
+
+    async def health(self, binary: str | None = None) -> dict:
+        try:
+            code, stdout, stderr = await _run_hermes(["--version"], timeout=10, binary=binary)
+            if code == 0:
+                version = stdout.strip().split("\n")[0] if stdout else "unknown"
+                return {"ok": True, "version": version, "error": None}
+            return {"ok": False, "version": None, "error": stderr[:200]}
+        except Exception as e:
+            return {"ok": False, "version": None, "error": str(e)}
+
+    async def chat(self, message: str, *, session_id: str | None = None,
+                   workdir: str | None = None, model: str | None = None,
+                   timeout: int = 120, quiet: bool = True,
+                   binary: str | None = None, yolo: bool = False) -> dict:
+        args = ["chat", "-q", message]
+        if quiet:
+            args.append("--quiet")
+        if session_id:
+            args.extend(["--resume", session_id])
+        if model:
+            args.extend(["-m", model])
+        if yolo:
+            args.append("--yolo")
+
+        code, stdout, stderr = await _run_hermes(args, timeout=timeout, workdir=workdir, binary=binary)
+        if code != 0:
+            error_msg = stderr.strip() or stdout.strip()
+            raise HermesCliError(f"Hermes 返回错误 (code={code}): {error_msg[:300]}")
+        sid = _parse_session_id_from_stderr(stderr)
+        response = _parse_response_text(stdout)
+        return {
+            "session_id": sid or session_id or "unknown",
+            "response": response or "(无输出)",
+            "is_new": session_id is None,
+        }
+
+    async def list_sessions(self, timeout: int = 15, binary: str | None = None) -> list[dict]:
+        code, stdout, stderr = await _run_hermes(["sessions", "list"], timeout=timeout, binary=binary)
+        if code != 0:
+            logger.warning(f"获取会话列表失败 (code={code}): {stderr[:200]}")
+            return []
+        return _parse_sessions_list(stdout)
+
+    async def get_session_detail(self, session_id: str, timeout: int = 15,
+                                  binary: str | None = None) -> dict | None:
+        try:
+            code, stdout, stderr = await _run_hermes(
+                ["sessions", "export", "--session-id", session_id, "-"],
+                timeout=timeout, binary=binary
+            )
+            if code != 0:
+                logger.warning(f"导出会话详情失败 (code={code}): {stderr[:200]}")
+                return None
+            for line in stdout.split("\n"):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                    if data.get("id") == session_id:
+                        return data
+                except json.JSONDecodeError:
+                    continue
+            return None
+        except Exception as e:
+            logger.warning(f"获取会话详情失败: {e}")
+            return None
+
+    async def get_session_messages(self, session_id: str, timeout: int = 30,
+                                    binary: str | None = None) -> list[dict]:
+        detail = await self.get_session_detail(session_id, timeout=timeout, binary=binary)
+        return detail.get("messages", []) if detail else []
+
+    async def switch_session(self, session_id: str, timeout: int = 15,
+                              binary: str | None = None) -> bool:
+        sessions = await self.list_sessions(timeout=timeout, binary=binary)
+        return any(s["id"] == session_id for s in sessions)
+
+    async def delete_session(self, session_id: str, *, timeout: int = 15,
+                              binary: str | None = None, force: bool = False) -> tuple[bool, str]:
+        try:
+            args = ["sessions", "delete"]
+            if force:
+                args.append("--yes")
+            args.append(session_id)
+            code, stdout, stderr = await _run_hermes(args, timeout=timeout, binary=binary)
+            if code == 0:
+                return True, f"已删除会话 {session_id[:16]}..."
+            error_msg = stderr.strip() or stdout.strip()
+            return False, f"删除失败: {error_msg[:200]}"
+        except HermesCliError as e:
+            return False, str(e)
+
+    async def prune_sessions(self, *, older_than: int = 90, source: str | None = None,
+                              timeout: int = 30, binary: str | None = None,
+                              force: bool = False) -> tuple[bool, str]:
+        try:
+            args = ["sessions", "prune", f"--older-than={older_than}"]
+            if source:
+                args.append(f"--source={source}")
+            if force:
+                args.append("--yes")
+            code, stdout, stderr = await _run_hermes(args, timeout=timeout, binary=binary)
+            if code == 0:
+                return True, stdout.strip() or f"已清理 {older_than} 天前的旧会话"
+            error_msg = stderr.strip() or stdout.strip()
+            return False, f"清理失败: {error_msg[:200]}"
+        except HermesCliError as e:
+            return False, str(e)
+
+    async def rename_session_cmd(self, session_id: str, title: str, *,
+                                  timeout: int = 15, binary: str | None = None) -> tuple[bool, str]:
+        try:
+            args = ["sessions", "rename", session_id, title]
+            code, stdout, stderr = await _run_hermes(args, timeout=timeout, binary=binary)
+            if code == 0:
+                return True, f"已重命名会话 {session_id[:16]}... 为「{title}」"
+            error_msg = stderr.strip() or stdout.strip()
+            return False, f"重命名失败: {error_msg[:200]}"
+        except HermesCliError as e:
+            return False, str(e)
+
+
+class HubHermesService(HermesService):
+    """远程 Hermes Hub 模式"""
+
+    def __init__(self, endpoint: str, access_token: str, timeout: int = 120, verify_ssl: bool = False):
+        self._client = AsyncHermesHubClient(endpoint, access_token, timeout=timeout, verify_ssl=verify_ssl)
+
+    async def health(self, binary: str | None = None) -> dict:
+        return await self._client.health()
+
+    async def chat(self, message: str, *, session_id: str | None = None,
+                   workdir: str | None = None, model: str | None = None,
+                   timeout: int = 120, quiet: bool = True,
+                   binary: str | None = None, yolo: bool = False) -> dict:
+        if session_id:
+            data = await self._client.send_message(
+                session_id, message,
+                workdir=workdir, model=model, timeout=timeout, yolo=yolo
+            )
+            return {"session_id": session_id, "response": data.get("response", ""), "is_new": False}
+        data = await self._client.create_session(
+            message,
+            workdir=workdir, model=model, timeout=timeout, yolo=yolo
+        )
+        return {
+            "session_id": data.get("session_id", "unknown"),
+            "response": data.get("response", ""),
+            "is_new": True,
+        }
+
+    async def list_sessions(self, timeout: int = 15, binary: str | None = None) -> list[dict]:
+        return await self._client.list_sessions()
+
+    async def get_session_detail(self, session_id: str, timeout: int = 15,
+                                  binary: str | None = None) -> dict | None:
+        try:
+            return await self._client.get_session(session_id)
+        except Exception:
+            return None
+
+    async def get_session_messages(self, session_id: str, timeout: int = 30,
+                                    binary: str | None = None) -> list[dict]:
+        try:
+            return await self._client.get_messages(session_id)
+        except Exception:
+            return []
+
+    async def delete_session(self, session_id: str, *, timeout: int = 15,
+                              binary: str | None = None, force: bool = False) -> tuple[bool, str]:
+        try:
+            await self._client.delete_session(session_id)
+            return True, f"已删除会话 {session_id[:16]}..."
+        except Exception as e:
+            return False, f"删除失败: {e}"
+
+    async def prune_sessions(self, *, older_than: int = 90, source: str | None = None,
+                              timeout: int = 30, binary: str | None = None,
+                              force: bool = False) -> tuple[bool, str]:
+        try:
+            data = await self._client.prune_sessions(older_than=older_than, source=source)
+            return True, data.get("detail", f"已清理 {older_than} 天前的旧会话")
+        except Exception as e:
+            return False, f"清理失败: {e}"
+
+    async def rename_session_cmd(self, session_id: str, title: str, *,
+                                  timeout: int = 15, binary: str | None = None) -> tuple[bool, str]:
+        try:
+            await self._client.rename_session(session_id, title)
+            return True, f"已重命名会话 {session_id[:16]}... 为「{title}」"
+        except Exception as e:
+            return False, f"重命名失败: {e}"
+
+    async def switch_session(self, session_id: str, timeout: int = 15,
+                              binary: str | None = None) -> bool:
+        try:
+            await self._client.get_session(session_id)
+            return True
+        except Exception:
+            return False
+
+    def get_event_stream(self, sse_timeout: int = 90):
+        """返回 SSE 异步生成器 (event, data)。"""
+        return self._client.subscribe_events(sse_timeout=sse_timeout)
+
+    async def close(self):
+        await self._client.close()
+
+
+# 全局服务实例
+_service: HermesService = LocalHermesService()
+
+
+def configure_service(config: dict) -> None:
+    """根据 AstrBot 配置初始化服务"""
+    global _service
+    mode = config.get("remote_mode", "local")
+    if mode == "hub":
+        endpoint = config.get("hub_endpoint", "").strip()
+        token = config.get("access_token", "").strip()
+        timeout = int(config.get("hub_timeout", 120))
+        _raw_verify = config.get("hub_verify_ssl", False)
+        if isinstance(_raw_verify, str):
+            verify_ssl = _raw_verify.strip().lower() in ("true", "1", "yes", "on")
+        else:
+            verify_ssl = bool(_raw_verify)
+        if not endpoint or not token:
+            logger.warning("remote_mode=hub 但 hub_endpoint/access_token 未配置，回退到本地模式")
+            _service = LocalHermesService()
+            return
+        _service = HubHermesService(endpoint, token, timeout=timeout, verify_ssl=verify_ssl)
+        logger.info(f"Hermes 客户端已切换到 Hub 模式: {endpoint} (verify_ssl={verify_ssl})")
+    else:
+        _service = LocalHermesService()
+
+
+def get_service() -> HermesService:
+    return _service
+
+
+def is_hub_mode() -> bool:
+    return isinstance(_service, HubHermesService)
+
+
+# ── 对外接口（兼容老调用方）──────────────────────────────
 
 async def chat(message: str, *, session_id: str | None = None,
                workdir: str | None = None, model: str | None = None,
                timeout: int = 120, quiet: bool = True,
                binary: str | None = None, yolo: bool = False) -> dict:
-    """
-    向 Hermes 发送消息。
-    
-    Args:
-        message: 要发送的消息
-        session_id: 如果提供，则继续该会话；否则创建新会话
-        workdir: Hermes 工作目录
-        model: 模型名称（仅新会话时有效）
-        timeout: 超时秒数
-        quiet: 是否使用安静模式
-        binary: Hermes CLI 路径
-        yolo: 是否启用 yolo 模式（跳过危险命令确认）
-        
-    Returns:
-        {"session_id": str, "response": str, "is_new": bool}
-    """
-    args = ["chat", "-q", message]
-    
-    if quiet:
-        args.append("--quiet")
-    if session_id:
-        args.extend(["--resume", session_id])
-    if model:
-        args.extend(["-m", model])
-    if yolo:
-        args.append("--yolo")
-    
-    code, stdout, stderr = await _run_hermes(args, timeout=timeout, workdir=workdir, binary=binary)
-    
-    if code != 0:
-        error_msg = stderr.strip() or stdout.strip()
-        raise HermesCliError(f"Hermes 返回错误 (code={code}): {error_msg[:300]}")
-
-    # --quiet 模式: session_id 在 stderr，回复文本在 stdout
-    sid = _parse_session_id_from_stderr(stderr)
-    response = _parse_response_text(stdout)
-
-    return {
-        "session_id": sid or session_id or "unknown",
-        "response": response or "(无输出)",
-        "is_new": session_id is None,
-    }
-
-
-async def list_sessions(timeout: int = 15,
-                        binary: str | None = None) -> list[dict]:
-    """列出所有 Hermes 会话"""
-    code, stdout, stderr = await _run_hermes(
-        ["sessions", "list"], timeout=timeout, binary=binary
+    return await _service.chat(
+        message, session_id=session_id, workdir=workdir, model=model,
+        timeout=timeout, quiet=quiet, binary=binary, yolo=yolo
     )
-    if code != 0:
-        logger.warning(f"获取会话列表失败 (code={code}): {stderr[:200]}")
-        return []
-    return _parse_sessions_list(stdout)
 
 
-async def get_session_messages(session_id: str, timeout: int = 30,
-                                binary: str | None = None) -> list[dict]:
-    """
-    获取会话的消息历史。
-    通过 `hermes sessions export --session-id <id> -` 导出 JSONL 到 stdout 并解析。
-    返回消息列表，每条包含 role 和 content。
-    """
-    try:
-        code, stdout, stderr = await _run_hermes(
-            ["sessions", "export", "--session-id", session_id, "-"],
-            timeout=timeout, binary=binary
-        )
-        if code != 0:
-            logger.warning(f"导出会话失败 (code={code}): {stderr[:200]}")
-            return []
-        for line in stdout.split("\n"):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                data = json.loads(line)
-                if data.get("id") == session_id:
-                    return data.get("messages", [])
-            except json.JSONDecodeError:
-                continue
-        return []
-    except Exception as e:
-        logger.warning(f"获取会话消息失败: {e}")
-        return []
+async def list_sessions(timeout: int = 15, binary: str | None = None) -> list[dict]:
+    return await _service.list_sessions(timeout=timeout, binary=binary)
 
 
 async def check_health(binary: str | None = None) -> dict:
-    """
-    检查 Hermes CLI 是否可用。
-    返回: {"ok": bool, "version": str, "error": str}
-    """
-    try:
-        code, stdout, stderr = await _run_hermes(
-            ["--version"], timeout=10, binary=binary
-        )
-        if code == 0:
-            version = stdout.strip().split("\n")[0] if stdout else "unknown"
-            return {"ok": True, "version": version, "error": None}
-        return {"ok": False, "version": None, "error": stderr[:200]}
-    except Exception as e:
-        return {"ok": False, "version": None, "error": str(e)}
+    return await _service.health(binary=binary)
 
 
 async def get_session_detail(session_id: str, timeout: int = 15,
                               binary: str | None = None) -> dict | None:
-    """
-    获取会话详细信息。
-    通过 `hermes sessions export --session-id <id> -` 导出 JSONL 到 stdout 并解析。
-    """
-    try:
-        code, stdout, stderr = await _run_hermes(
-            ["sessions", "export", "--session-id", session_id, "-"],
-            timeout=timeout, binary=binary
-        )
-        if code != 0:
-            logger.warning(f"导出会话详情失败 (code={code}): {stderr[:200]}")
-            return None
-        for line in stdout.split("\n"):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                data = json.loads(line)
-                if data.get("id") == session_id:
-                    return data
-            except json.JSONDecodeError:
-                continue
-        return None
-    except Exception as e:
-        logger.warning(f"获取会话详情失败: {e}")
-        return None
+    return await _service.get_session_detail(session_id, timeout=timeout, binary=binary)
 
 
-async def switch_session(session_id: str, timeout: int = 15,
-                          binary: str | None = None) -> bool:
-    """
-    验证会话是否存在且可切换。
-    通过尝试列出会话来验证。
-    """
-    sessions = await list_sessions(timeout=timeout, binary=binary)
-    return any(s["id"] == session_id for s in sessions)
+async def get_session_messages(session_id: str, timeout: int = 30,
+                                binary: str | None = None) -> list[dict]:
+    return await _service.get_session_messages(session_id, timeout=timeout, binary=binary)
 
 
 async def delete_session(session_id: str, *, timeout: int = 15,
                           binary: str | None = None, force: bool = False) -> tuple[bool, str]:
-    """
-    删除一个 Hermes 会话。
-    
-    Returns:
-        (success, message)
-    """
-    try:
-        args = ["sessions", "delete"]
-        if force:
-            args.append("--yes")
-        args.append(session_id)
-        code, stdout, stderr = await _run_hermes(args, timeout=timeout, binary=binary)
-        if code == 0:
-            return True, f"已删除会话 {session_id[:16]}..."
-        error_msg = stderr.strip() or stdout.strip()
-        return False, f"删除失败: {error_msg[:200]}"
-    except HermesCliError as e:
-        return False, str(e)
+    return await _service.delete_session(session_id, timeout=timeout, binary=binary, force=force)
 
 
 async def prune_sessions(*, older_than: int = 90, source: str | None = None,
                           timeout: int = 30, binary: str | None = None,
                           force: bool = False) -> tuple[bool, str]:
-    """
-    批量清理旧会话。
-    
-    Args:
-        older_than: 删除超过 N 天的会话（默认 90）
-        source: 只清理指定来源的会话
-        force: 跳过确认
-        
-    Returns:
-        (success, message)
-    """
-    try:
-        args = ["sessions", "prune", f"--older-than={older_than}"]
-        if source:
-            args.append(f"--source={source}")
-        if force:
-            args.append("--yes")
-        code, stdout, stderr = await _run_hermes(args, timeout=timeout, binary=binary)
-        if code == 0:
-            return True, stdout.strip() or f"已清理 {older_than} 天前的旧会话"
-        error_msg = stderr.strip() or stdout.strip()
-        return False, f"清理失败: {error_msg[:200]}"
-    except HermesCliError as e:
-        return False, str(e)
+    return await _service.prune_sessions(
+        older_than=older_than, source=source, timeout=timeout, binary=binary, force=force
+    )
 
 
 async def rename_session_cmd(session_id: str, title: str, *,
                               timeout: int = 15, binary: str | None = None) -> tuple[bool, str]:
-    """
-    重命名一个 Hermes 会话。
-    
-    Returns:
-        (success, message)
-    """
-    try:
-        args = ["sessions", "rename", session_id, title]
-        code, stdout, stderr = await _run_hermes(args, timeout=timeout, binary=binary)
-        if code == 0:
-            return True, f"已重命名会话 {session_id[:16]}... 为「{title}」"
-        error_msg = stderr.strip() or stdout.strip()
-        return False, f"重命名失败: {error_msg[:200]}"
-    except HermesCliError as e:
-        return False, str(e)
+    return await _service.rename_session_cmd(session_id, title, timeout=timeout, binary=binary)
+
+
+async def switch_session(session_id: str, timeout: int = 15,
+                          binary: str | None = None) -> bool:
+    return await _service.switch_session(session_id, timeout=timeout, binary=binary)
+
+
+async def subscribe_events(sse_timeout: int = 90):
+    """仅当 Hub 模式时可用。"""
+    if isinstance(_service, HubHermesService):
+        async for event, data in _service.get_event_stream(sse_timeout=sse_timeout):
+            yield event, data
+    else:
+        # 本地模式没有 SSE，返回空迭代
+        return
+        yield

@@ -43,5 +43,12 @@ async def run_hermes(
         except Exception:
             pass
         return -1, "", f"Hermes 命令超时（{timeout}s）"
+    except asyncio.CancelledError:
+        try:
+            proc.kill()
+            await proc.wait()
+        except Exception:
+            pass
+        raise
     except Exception as e:
         return -1, "", f"Hermes 运行失败: {e}"

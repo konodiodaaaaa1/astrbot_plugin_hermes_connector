@@ -60,7 +60,8 @@ class CommandHandlers:
             sessions = await list_sessions(binary=self._binary())
             self._get_state().update_sessions_cache(sessions)
             return sessions
-        except Exception:
+        except Exception as e:
+            logger.warning(f"刷新 Hermes 会话列表失败: {e}")
             return []
     
     async def _resolve_session(self, event, arg: str | None = None) -> dict | None:

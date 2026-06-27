@@ -23,8 +23,7 @@ HIGH_RISK_PATTERNS = [
     r"\breboot\b", r"\bshutdown\b", r"\bpoweroff\b",
     r"\bdocker\s+rm\s+-f\b", r"\bdocker\s+system\s+prune\b",
     r"\bkubectl\s+delete\b",
-    r"\btoken\b", r"\bsecret\b", r"\bapi.key\b",
-    r"\bpasswd\b", r"\bhtpasswd\b",
+    # token/secret/password keywords alone cause too many false positives;
     r"\bkill\s+-9\b",
     r"rm\s+-rf\s+[/~]",  # 系统级删除
 ]

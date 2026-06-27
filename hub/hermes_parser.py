@@ -3,6 +3,11 @@ import json
 import re
 
 SESSION_ID_RE = re.compile(r"session_id:\s*(\S+)")
+ANSI_ESCAPE_RE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+
+
+def _strip_ansi(text: str) -> str:
+    return ANSI_ESCAPE_RE.sub("", text)
 
 # Hermes 会话列表输出的表头/分隔行
 LIST_HEADER = "Title                            Preview                                  Last Active   ID"
@@ -10,17 +15,18 @@ LIST_SEPARATOR = "─" * 118
 
 
 def parse_session_id(output: str) -> str | None:
-    m = SESSION_ID_RE.search(output)
+    text = _strip_ansi(output)
+    m = SESSION_ID_RE.search(text)
     return m.group(1) if m else None
 
 
 def parse_response_text(output: str) -> str:
-    return output.strip()
+    return _strip_ansi(output).strip()
 
 
 def parse_sessions_list(output: str) -> list[dict]:
     sessions = []
-    lines = output.strip().split("\n")
+    lines = _strip_ansi(output).strip().split("\n")
     header_idx = None
     for i, line in enumerate(lines):
         if line.strip().startswith("Title"):
@@ -51,7 +57,7 @@ def parse_sessions_list(output: str) -> list[dict]:
 
 
 def parse_export_line(output: str, session_id: str) -> dict | None:
-    for line in output.split("\n"):
+    for line in _strip_ansi(output).split("\n"):
         line = line.strip()
         if not line:
             continue

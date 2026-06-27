@@ -112,25 +112,26 @@ class AsyncHermesHubClient:
     async def delete(self, path: str, **kwargs) -> aiohttp.ClientResponse:
         return await self.request("DELETE", path, **kwargs)
 
-    async def get_json(self, path: str, **kwargs) -> dict:
-        resp = await self.get(path, **kwargs)
-        if resp.status >= 400:
-            body = await resp.text()
-            resp.release()
-            raise Exception(f"Hermes Hub HTTP {resp.status}: {body[:200]}")
-        data = await resp.json()
+    async def _read_json_response(self, resp: aiohttp.ClientResponse) -> dict:
+        body = await resp.text()
         resp.release()
-        return data
+        if resp.status >= 400:
+            raise Exception(f"Hermes Hub HTTP {resp.status}: {body[:200]}")
+        if not body.strip():
+            return {}
+        content_type = resp.headers.get("Content-Type", "")
+        if "application/json" not in content_type and "json" not in content_type.lower():
+            raise Exception(f"Hermes Hub returned unexpected content ({content_type}): {body[:200]}")
+        try:
+            return json.loads(body)
+        except json.JSONDecodeError as e:
+            raise Exception(f"Hermes Hub returned invalid JSON ({content_type}): {body[:200]}... ({e})")
+
+    async def get_json(self, path: str, **kwargs) -> dict:
+        return await self._read_json_response(await self.get(path, **kwargs))
 
     async def post_json(self, path: str, **kwargs) -> dict:
-        resp = await self.post(path, **kwargs)
-        if resp.status >= 400:
-            body = await resp.text()
-            resp.release()
-            raise Exception(f"Hermes Hub HTTP {resp.status}: {body[:200]}")
-        data = await resp.json()
-        resp.release()
-        return data
+        return await self._read_json_response(await self.post(path, **kwargs))
 
     async def health(self) -> dict:
         await self._ensure_session()

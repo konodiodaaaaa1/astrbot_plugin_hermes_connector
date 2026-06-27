@@ -1,5 +1,7 @@
 """Hermes Hub 鉴权：access_token 换 JWT。"""
+import logging
 import os
+import pathlib
 import secrets
 from datetime import datetime, timedelta, timezone
 
@@ -7,7 +9,25 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jose import jwt, JWTError
 
-JWT_SECRET = os.environ.get("HERMES_JWT_SECRET") or secrets.token_urlsafe(32)
+def _load_or_create_jwt_secret() -> str:
+    """优先从 HERMES_JWT_SECRET_FILE 读取；没有则生成并落盘，避免每次重启失效。"""
+    secret_path = pathlib.Path(os.environ.get("HERMES_JWT_SECRET_FILE", "/opt/hermes-hub/.jwt_secret"))
+    try:
+        if secret_path.exists():
+            secret = secret_path.read_text(encoding="utf-8").strip()
+            if secret:
+                return secret
+        secret = secrets.token_urlsafe(32)
+        secret_path.parent.mkdir(parents=True, exist_ok=True)
+        secret_path.write_text(secret, encoding="utf-8")
+        return secret
+    except Exception as e:
+        logger = logging.getLogger("hermes_hub")
+        logger.warning(f"无法持久化 JWT secret ({secret_path}): {e}，本次使用临时 secret")
+        return secrets.token_urlsafe(32)
+
+
+JWT_SECRET = os.environ.get("HERMES_JWT_SECRET") or _load_or_create_jwt_secret()
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRE_SECONDS = int(os.environ.get("HERMES_JWT_EXPIRE_SECONDS", "900"))
 ACCESS_TOKEN = os.environ.get("HERMES_ACCESS_TOKEN")

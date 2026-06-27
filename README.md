@@ -16,6 +16,12 @@
 - [安装插件](#安装插件)
 - [模式一：本地模式（默认）](#模式一本地模式默认)
 - [模式二：Hub 远程模式](#模式二hub-远程模式)
+  - [部署 Hermes Hub](#部署-hermes-hub)
+  - [环境变量](#环境变量)
+  - [HTTPS 与反代配置](#https-与反代配置)
+  - [更新 Hermes Hub](#更新-hermes-hub)
+  - [更新 Hermes Agent（Docker）](#更新-hermes-agentdocker)
+  - [API 端点](#api-端点)
 - [常用命令](#常用命令)
 - [配置项说明](#配置项说明)
 - [更新与维护](#更新与维护)
@@ -77,13 +83,13 @@ QQ / 微信 / Telegram
 1. 打开 AstrBot 管理面板 → 插件 → 安装插件。
 2. 输入仓库地址：
    ```
-   https://github.com/ziyue67/astrbot_plugin_hermes_connector
+   https://github.com/konodiodaaaaa1/astrbot_plugin_hermes_connector
    ```
 3. 等待安装完成，启用插件并进入配置页。
 
 ### 方式二：手动安装
 
-1. 从本仓库 [Releases](https://github.com/ziyue67/astrbot_plugin_hermes_connector/releases) 下载 `astrbot_plugin_hermes_connector.zip`。
+1. 从本仓库 [Releases](https://github.com/konodiodaaaaa1/astrbot_plugin_hermes_connector/releases) 下载 `astrbot_plugin_hermes_connector.zip`。
 2. 解压到 AstrBot 的 `data/plugins/` 目录下。
 3. 重启 AstrBot，启用插件。
 
@@ -145,46 +151,145 @@ docker run -d --name hermes \
 
 如果你已有现成的 Hermes 容器（例如通过 1Panel 部署），记下容器名，后续安装 Hub 时通过 `HERMES_CONTAINER` 指定即可。
 
-### 2. 部署 Hermes Hub
+### 部署 Hermes Hub
 
 从 Releases 下载 `hermes-hub.tar.gz`，一键安装：
 
 ```bash
 curl -L -o /tmp/hermes-hub.tar.gz \
-  https://github.com/ziyue67/astrbot_plugin_hermes_connector/releases/download/v1.3.3/hermes-hub.tar.gz
+  https://github.com/konodiodaaaaa1/astrbot_plugin_hermes_connector/releases/latest/download/hermes-hub.tar.gz
 sudo mkdir -p /opt/hermes-hub
 sudo tar -xzf /tmp/hermes-hub.tar.gz -C /opt/hermes-hub
 sudo bash /opt/hermes-hub/install.sh
 ```
 
-更多细节（HTTPS、环境变量、systemd、升级脚本）请参考 [hub/README.md](./hub/README.md)。
+默认监听 `127.0.0.1:9800`。脚本会自动生成 `HERMES_ACCESS_TOKEN` 并写入 `/etc/default/hermes-hub`（权限 `600`）。
 
-### 3. 暴露到公网（必须 HTTPS）
+安装时可通过环境变量自定义配置：
+
+```bash
+sudo HERMES_HOST=0.0.0.0 HERMES_PORT=9443 \
+  HERMES_SSL_KEYFILE=/path/to/your.key \
+  HERMES_SSL_CERTFILE=/path/to/your.pem \
+  HERMES_CONTAINER=my-hermes \
+  bash /opt/hermes-hub/install.sh
+```
+
+### 暴露到公网（必须 HTTPS）
 
 推荐方式：
 
-- Nginx / Caddy / OpenResty 反向代理
-- Cloudflare Tunnel
-- Tailscale / 内网穿透
+- **直接 HTTPS**：安装时传入证书路径，Hub 会自己监听带 SSL 的端口。
+  ```bash
+  sudo ufw allow 9443/tcp   # 或你的防火墙/安全组
+  ```
+- **Nginx / Caddy / OpenResty 反向代理**：让 Hub 继续监听 `127.0.0.1:9800`，由前端提供 HTTPS。
+- **Cloudflare Tunnel / Tailscale**：不改变 Hub 监听地址，走隧道或内网 IP。
 
 **不要直接以 HTTP 形式暴露在公网。**
 
-### 4. 配置 AstrBot 插件
+### HTTPS 与反代配置
+
+如果通过 Nginx / OpenResty / Caddy 反代 Hub，建议在站点配置中加入以下参数，避免长任务触发 504 Gateway Time-out 或 SSE 被缓冲：
+
+```nginx
+location ^~ / {
+    proxy_pass http://127.0.0.1:9800;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection $http_connection;
+
+    # 长任务/后台轮询需要较长的超时
+    proxy_connect_timeout 60s;
+    proxy_send_timeout 600s;
+    proxy_read_timeout 600s;
+
+    # 必须关闭缓冲，否则 SSE 事件会被缓存，导致 TransferEncodingError
+    proxy_buffering off;
+    proxy_cache off;
+}
+```
+
+### 获取 Access Token
+
+```bash
+cat /etc/default/hermes-hub | grep HERMES_ACCESS_TOKEN
+```
+
+### 配置 AstrBot 插件
 
 在插件配置页：
 
 - `remote_mode` → `hub`
-- `hub_endpoint` → `https://your-hermes-hub.example.com`
-- `access_token` → Hub 安装时生成的 Token（查看 `/etc/default/hermes-hub`）
+- `hub_endpoint` → 你的 HTTPS 地址，例如 `https://your-server:9443`
+- `access_token` → `/etc/default/hermes-hub` 中的 Token
 - `hub_verify_ssl` → 使用正规证书开 `true`；IP/自签名证书建议关 `false`
 
-### 5. 验证
+发送 `/hermes health` 验证连接。看到远端 Hermes 版本号即表示远程连接成功。
 
-```
-/hermes health
+### 环境变量
+
+| 变量 | 说明 | 默认值 |
+|------|------|--------|
+| `HERMES_ACCESS_TOKEN` | 插件连接用的 Access Token | 自动生成 |
+| `HERMES_JWT_SECRET` | JWT 签名密钥 | 自动生成 |
+| `HERMES_JWT_SECRET_FILE` | JWT 密钥持久化文件路径 | `/opt/hermes-hub/.jwt_secret` |
+| `HERMES_HOST` | 监听地址 | `127.0.0.1` |
+| `HERMES_PORT` | 监听端口 | `9800` |
+| `HERMES_SSL_KEYFILE` | HTTPS 私钥路径（可选） | 空 |
+| `HERMES_SSL_CERTFILE` | HTTPS 证书路径（可选） | 空 |
+| `HERMES_BINARY` | Hermes CLI 路径 | `hermes` |
+| `HERMES_CONTAINER` | Docker 容器名，设为空则使用本地 Hermes | 空 |
+| `HERMES_CORS_ORIGINS` | CORS 来源，逗号分隔 | 空 |
+
+### 更新 Hermes Hub
+
+在 Hub 服务器执行 `sudo bash /opt/hermes-hub/update-hub.sh`，脚本会自动从原仓库下载最新版本并保留现有配置。
+
+### 更新 Hermes Agent
+
+使用 `update-hermes.py` 脚本安全更新 Docker 容器（见上方[更新 Hermes Agent（Docker）](#更新-hermes-agentdocker)）。
+
+---
+sudo rm -rf /opt/hermes-hub
+sudo mkdir -p /opt/hermes-hub
+sudo cp -a /opt/hermes-hub-backups/hermes-hub-<时间戳>/. /opt/hermes-hub/
+sudo systemctl restart hermes-hub
 ```
 
-看到远端 Hermes 版本号即表示远程连接成功。
+### 更新 Hermes Agent（Docker）
+
+```bash
+# 先 dry-run
+sudo python3 /opt/hermes-hub/update-hermes.py <容器名> --dry-run
+
+# 正式执行（自动备份、失败回滚）
+sudo python3 /opt/hermes-hub/update-hermes.py <容器名> --yes
+```
+
+- 若容器由 `docker-compose` 管理（如 1Panel 应用），脚本会修改 `docker-compose.yml` 里的镜像标签并 `docker compose up -d`。
+- 若是普通 `docker run` 容器，脚本会根据 `docker inspect` 生成等价命令重建容器。
+- 升级失败时会自动恢复到原镜像和原 compose 文件。
+
+### API 端点
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/health` | 健康检查 |
+| POST | `/api/auth` | Access Token 换 JWT |
+| GET | `/api/events` | SSE 事件流 |
+| GET | `/api/sessions` | 列出会话 |
+| POST | `/api/sessions` | 创建会话 |
+| GET | `/api/sessions/{id}` | 获取会话详情 |
+| GET | `/api/sessions/{id}/messages` | 获取会话消息 |
+| POST | `/api/sessions/{id}/messages` | 发送消息 |
+| POST | `/api/sessions/{id}/stop` | 停止会话 |
+| POST | `/api/sessions/{id}/rename` | 重命名会话 |
+| DELETE | `/api/sessions/{id}` | 删除会话 |
+| POST | `/api/sessions/prune` | 清理旧会话 |
 
 ---
 
@@ -264,25 +369,17 @@ sudo bash /opt/hermes-hub/install.sh
 
 ### 更新 Hermes Hub
 
-在 Hub 服务器执行：
+在 Hub 服务器执行 `sudo bash /opt/hermes-hub/update-hub.sh`，脚本会自动从原仓库下载最新版本并保留现有配置。
 
-```bash
-sudo bash /opt/hermes-hub/update-hub.sh
-```
+### 更新 Hermes Agent
 
-### 更新 Hermes Agent（Docker）
-
-```bash
-sudo python3 /opt/hermes-hub/update-hermes.py <容器名> --yes
-```
-
-升级失败会自动回滚。更多细节见 [hub/README.md](./hub/README.md)。
+使用 `update-hermes.py` 脚本安全更新 Docker 容器（见上方[更新 Hermes Agent](#更新-hermes-agentdocker)）。
 
 ---
 
 ## 致谢
 
-- 原版插件：[konodiodaaaaa1/astrbot_plugin_hermes_connector](https://github.com/konodiodaaaaa1/astrbot_plugin_hermes_connector)
+- Hub 远程模式贡献：[@ziyue67](https://github.com/ziyue67)
 - Hub 架构参考：[LiJinHao999/astrbot_plugin_hapi_connector](https://github.com/LiJinHao999/astrbot_plugin_hapi_connector)
 - [Hermes Agent](https://github.com/NousResearch/hermes-agent)
 - [AstrBot](https://github.com/Soulter/AstrBot)

@@ -193,6 +193,10 @@ class AsyncHermesHubClient:
             "source": source,
         })
 
+    async def discover_models(self) -> dict:
+        """调用 Hub /api/models 获取当前 provider 可用模型。"""
+        return await self.get_json("/api/models")
+
     async def subscribe_events(self, sse_timeout: int = 90):
         """订阅 SSE 事件流，返回 (event, data) 异步生成器。"""
         await self._ensure_session()

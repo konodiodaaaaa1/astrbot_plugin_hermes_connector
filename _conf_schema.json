@@ -36,10 +36,16 @@
     "hint": "留空则使用 Hermes 默认工作目录。例如: D:/AI/workspace"
   },
   "hermes_model": {
-    "description": "创建新会话时使用的默认模型",
+    "description": "默认模型（通常留空）。留空时新会话/发消息交给 Hermes 自身已配置的路由（model.default + provider），最稳妥。",
     "type": "string",
     "default": "",
-    "hint": "留空则使用 Hermes 默认模型。例如: deepseek/deepseek-v4-flash"
+    "hint": "⚠️ 这是硬编码兜底，不是 LLM 动态选择。若填写，必须是当前 provider 真实可用的模型 ID（可用 /hermes 的 hermes_list_models 工具查询）。填错会自动退回默认。留空推荐。"
+  },
+  "model_confirm": {
+    "description": "AI 想用非默认模型时，先经 AstrBot 向用户确认",
+    "type": "bool",
+    "default": false,
+    "hint": "开启后：LLM 在工具里指定了非默认模型时，会通过审批机制征询用户同意；用户拒绝则退回默认模型继续执行（不中止任务）。关闭则直接采用 LLM 指定的模型（失败时底层仍会自动兜底）。"
   },
   "max_timeout": {
     "description": "Hermes 命令最大超时时间（秒）",

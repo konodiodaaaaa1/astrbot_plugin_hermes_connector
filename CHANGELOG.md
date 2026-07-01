@@ -1,5 +1,32 @@
 # 更新日志
 
+## v1.3.4 — LLM 自主模型选择 + 智能兜底
+
+### 模型路由修复（核心）
+
+修复了「插件把配置的模型无脑塞进每次 `hermes chat -m`」导致的路由串台问题：Hermes 的 `-m` 只覆盖模型名、不切换 provider，若填入的模型不属于当前激活 provider，请求会被错误地发往当前 provider 的端点。
+
+新策略：**默认交给 Hermes 自身已配置的路由（`model.default` + `provider`），换模型改为 LLM 按需自主发现 + 智能兜底**。
+
+### 新增
+
+1. **模型发现工具 `hermes_list_models`（LLM Function Calling）**：查询当前 Hermes 激活 provider 实际可用的模型 ID 列表和确切格式，供 LLM 在换模型前查询
+   - 本地模式：读 Hermes `config.yaml`（`model.base_url` / `provider`）+ `.env`，请求 provider 的 OpenAI 兼容 `/v1/models`
+   - Hub 模式：新增 `GET /api/models` 端点（Hub 与 Hermes 同机，读其本地配置）
+   - 只返回模型 ID，绝不回传或记录 API key
+
+2. **`hermes_send_message` / `hermes_create_session` 新增可选 `model` 参数**：LLM 可在调用时指定模型。工具 docstring 内置「模型选择协议」：默认留空用默认模型；要换先调 `hermes_list_models` 拿准确 ID，不许凭记忆猜测
+
+3. **智能兜底 `chat_with_fallback`**：显式指定的模型调用失败且错误疑似模型相关（`model` / `not found` / `400` / `404` 等关键字）时，自动去掉 `-m` 退回默认模型重试一次，结果中附「⚠️ 指定模型不可用，已退回默认模型」。连接错误 / 超时不误触发
+
+4. **新增配置项 `model_confirm`（默认关）**：开启后 LLM 指定非默认模型时，先经 AstrBot 审批机制向用户确认；用户拒绝则退回默认模型继续执行（不中止任务）
+
+### 变更
+
+1. `hermes_model` 配置项文案改为「通常留空、硬编码兜底、非 LLM 动态选择」，明确它不再是推荐的换模型方式
+2. 任务完成汇报中增加模型使用提示（「🧠 使用模型: xxx」或退回默认的告警）
+3. `_background_chat` / `_background_create` 支持透传 LLM 指定的模型
+
 ## v1.3.3 — Hub 远程模式 + 稳定性修复
 
 ### Hub 远程模式（新增）

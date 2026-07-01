@@ -12,6 +12,7 @@ from astrbot.api import AstrBotConfig, logger
 from astrbot.api.message_components import Plain, Poke
 
 from .hermes_cli_client import chat, list_sessions, check_health, get_session_detail, get_session_messages, delete_session, prune_sessions, rename_session_cmd, HermesCliError
+from .hermes_cli_client import chat_with_fallback, discover_models
 from . import hermes_cli_client as _hcc
 from .hermes_cli_client import subscribe_events
 from .command_handlers import CommandHandlers
@@ -73,7 +74,7 @@ def _safe_set_session(state_mgr, event, session_id, idx=None):
 
 @register("astrbot_plugin_hermes_connector", "konodiodaaaaa1",
           "连接 Hermes Agent，在聊天平台上远程操控 Hermes 会话，随时随地 Agent",
-          "1.3.3")
+          "1.3.4")
 class HermesConnectorPlugin(Star):
     
     async def _hub_event_listener(self):
@@ -356,12 +357,20 @@ class HermesConnectorPlugin(Star):
         yield formatters.format_session_list(sessions)
     
     @filter.llm_tool(name="hermes_send_message")
-    async def tool_send_message(self, event: AstrMessageEvent, message: str, session_idx: int = 1):
+    async def tool_send_message(self, event: AstrMessageEvent, message: str, session_idx: int = 1, model: str = ""):
         """向指定的 Hermes Agent 会话发送消息。
+
+        模型选择协议（重要）：
+        - 默认**不要**填 model 参数，留空即用 Hermes 已配置好的默认模型，这是最稳妥的选择。
+        - 只有当用户明确要求换模型、或任务确实需要特定模型时，才填 model。
+        - 填 model 前**必须**先调用 hermes_list_models 查询当前 provider 实际可用的模型 ID
+          和确切格式，然后把列表里的**准确 ID** 原样填进来。不要凭记忆猜测模型名。
+        - 若填入的模型不可用，系统会自动退回默认模型执行，并在结果中告知。
 
         Args:
             message(string): 要发送的消息内容
             session_idx(number): 会话序号（从 1 开始），使用 hermes_list_sessions 查看
+            model(string): 可选。指定使用的模型 ID（必须来自 hermes_list_models 的结果）。留空=用默认模型。
         """
         # 智能审批
         approval_mode = self.config.get("require_approval", "smart")
@@ -396,13 +405,20 @@ class HermesConnectorPlugin(Star):
                     yield _approval_failed_msg(reason)
                     return
             # medium 和 low 都自动放行
-        
+
+        # 模型选择确认：LLM 指定了非默认模型时，可选地向用户确认
+        req_model = (model or "").strip() or None
+        ok, chosen_model, note = await self._confirm_model_choice(event, req_model)
+        if not ok:
+            yield note
+            return
+
         await self._refresh_sessions()
         session = self.state_mgr.get_session_by_idx(session_idx)
         if not session:
             yield f"找不到序号 {session_idx} 的会话。请先调用 hermes_list_sessions 查看当前会话。"
             return
-        
+
         yolo_mode = self.config.get("hermes_approval_mode", "normal") == "yolo"
         sid = session["id"]
 
@@ -410,18 +426,20 @@ class HermesConnectorPlugin(Star):
         if self.progress_monitor.enabled:
             # 立即返回，后台执行
             task = asyncio.create_task(
-                self._background_chat(event, message, sid, session_idx)
+                self._background_chat(event, message, sid, session_idx, model=chosen_model)
             )
             self._track_bg_task(task)
-            yield f"✅ 已提交到 Hermes 会话 [{sid[:16]}...]，后台执行中。我会在有进展时通知你。"
+            model_hint = f"（模型: {chosen_model}）" if chosen_model else ""
+            yield f"✅ 已提交到 Hermes 会话 [{sid[:16]}...]{model_hint}，后台执行中。我会在有进展时通知你。"
             return
 
         # 阻塞模式（fallback）
         try:
-            result = await chat(
+            default_model = self.config.get("hermes_model", "") or None
+            result = await chat_with_fallback(
                 message, session_id=sid,
                 workdir=self.config.get("hermes_workdir", "") or None,
-                model=self.config.get("hermes_model", "") or None,
+                model=chosen_model or default_model, default_model=default_model,
                 timeout=120, yolo=yolo_mode,
                 binary=self.config.get("hermes_command", "hermes"),
             )
@@ -434,28 +452,34 @@ class HermesConnectorPlugin(Star):
                 if len(response) > max_len:
                     response = response[:max_len] + f"\n\n...（回复过长，截断至 {max_len} 字符。可用 /hermes msg 查看完整消息）"
 
+            if result.get("model_fallback"):
+                response = f"⚠️ 指定模型 `{result.get('fallback_from')}` 不可用，已用默认模型。\n\n" + response
             yield formatters.format_response(result["session_id"], response)
         except HermesCliError as e:
             yield str(e)
 
-    async def _background_chat(self, event, message: str, session_id: str, session_idx: int = 1):
+    async def _background_chat(self, event, message: str, session_id: str, session_idx: int = 1, model: str | None = None):
         """后台发送消息给 Hermes + 启动进度监控
 
         使用 --quiet 模式启动 subprocess，等待自然结束（超时 30 分钟）。
         进度监控在并行轮询，subprocess 完成后从 session export 提取最终回复。
+
+        model: LLM 显式指定的模型（None=用 Hermes 默认路由）。失败时自动退回默认。
         """
         yolo_mode = self.config.get("hermes_approval_mode", "normal") == "yolo"
         binary = self.config.get("hermes_command", "hermes")
+        default_model = self.config.get("hermes_model", "") or None
+        effective_model = model or default_model
 
         # 启动进度监控
         monitor_task = self.progress_monitor.start_monitoring(session_id, event)
 
         try:
             # 后台执行 hermes chat，给予充足超时（最长 30 分钟，浏览器/研究类任务需要 10+ 分钟）
-            result = await chat(
+            result = await chat_with_fallback(
                 message, session_id=session_id,
                 workdir=self.config.get("hermes_workdir", "") or None,
-                model=self.config.get("hermes_model", "") or None,
+                model=effective_model, default_model=default_model,
                 timeout=1800, yolo=yolo_mode,
                 binary=binary,
             )
@@ -488,9 +512,19 @@ class HermesConnectorPlugin(Star):
             # 停止监控（避免重复完成通知）
             self.progress_monitor.stop_monitoring(session_id)
 
+            model_note = ""
+            if result.get("model_fallback"):
+                model_note = (
+                    f"\n⚠️ 指定模型 `{result.get('fallback_from')}` 不可用，"
+                    f"已退回默认模型执行。\n"
+                )
+            elif result.get("model_used"):
+                model_note = f"\n🧠 使用模型: `{result.get('model_used')}`\n"
+
             final_text = (
                 f"✅ **Hermes 任务完成**\n"
-                f"会话: {result['session_id'][:16]}...\n\n"
+                f"会话: {result['session_id'][:16]}...\n"
+                f"{model_note}\n"
                 f"{response}"
             )
             await self._push_to_user(event, final_text)
@@ -510,20 +544,23 @@ class HermesConnectorPlugin(Star):
                 await self._push_to_user(event, f"❌ Hermes 执行失败: {err_str[:300]}")
         except asyncio.CancelledError:
             self.progress_monitor.stop_monitoring(session_id)
-            raise
         except Exception as e:
             self.progress_monitor.stop_monitoring(session_id)
             logger.warning(f"后台 chat 异常: {e}")
 
-    async def _background_create(self, event, prompt: str):
+    async def _background_create(self, event, prompt: str, model: str | None = None):
         """后台创建新 Hermes 会话 + 进度监控
 
         新会话的 session_id 在 chat() 返回前是未知的，
         所以这里启动一个检测任务并行轮询 sessions list，
         发现新会话后立即 start_monitoring。
+
+        model: LLM 显式指定的模型（None=用 Hermes 默认路由）。失败时自动退回默认。
         """
         yolo_mode = self.config.get("hermes_approval_mode", "normal") == "yolo"
         binary = self.config.get("hermes_command", "hermes")
+        default_model = self.config.get("hermes_model", "") or None
+        effective_model = model or default_model
 
         # 获取现有会话 ID 集合，用于检测新会话
         existing_ids = set()
@@ -553,10 +590,10 @@ class HermesConnectorPlugin(Star):
 
         try:
             # 创建新会话（session_id=None），给予充足超时
-            result = await chat(
+            result = await chat_with_fallback(
                 prompt,
                 workdir=self.config.get("hermes_workdir", "") or None,
-                model=self.config.get("hermes_model", "") or None,
+                model=effective_model, default_model=default_model,
                 timeout=1800, yolo=yolo_mode,
                 binary=binary,
             )
@@ -596,9 +633,19 @@ class HermesConnectorPlugin(Star):
             # 停止监控（避免重复完成通知）
             self.progress_monitor.stop_monitoring(sid)
 
+            model_note = ""
+            if result.get("model_fallback"):
+                model_note = (
+                    f"\n⚠️ 指定模型 `{result.get('fallback_from')}` 不可用，"
+                    f"已退回默认模型创建。\n"
+                )
+            elif result.get("model_used"):
+                model_note = f"\n🧠 使用模型: `{result.get('model_used')}`\n"
+
             final_text = (
                 f"🆕 **Hermes 新会话已创建**\n"
-                f"会话: {sid[:16]}...\n\n"
+                f"会话: {sid[:16]}...\n"
+                f"{model_note}\n"
                 f"{response}"
             )
             await self._push_to_user(event, final_text)
@@ -618,7 +665,6 @@ class HermesConnectorPlugin(Star):
         except asyncio.CancelledError:
             if not detect_task.done():
                 detect_task.cancel()
-            raise
         except Exception as e:
             if not detect_task.done():
                 detect_task.cancel()
@@ -640,12 +686,66 @@ class HermesConnectorPlugin(Star):
         except Exception as e:
             logger.warning(f"推送消息失败: {e}")
 
+    async def _confirm_model_choice(self, event, req_model: str | None):
+        """当 LLM 指定了非默认模型时，按配置向用户确认。
+
+        返回 (ok, chosen_model, note):
+            ok=False → 用户拒绝/超时，note 为提示语，调用方应中止。
+            ok=True  → chosen_model 为最终使用的模型（None=默认）。
+
+        行为：
+        - req_model 为空 → 直接放行，用默认模型。
+        - model_confirm=False（默认）→ 不打扰用户，直接用 LLM 指定的模型（失败时底层会兜底）。
+        - model_confirm=True → 通过 AstrBot approval 机制向用户确认；拒绝则退回默认模型继续。
+        """
+        if not req_model:
+            return True, None, ""
+
+        if not self.config.get("model_confirm", False):
+            return True, req_model, ""
+
+        window_id = _safe_window_id(event)
+        default_model = self.config.get("hermes_model", "") or "Hermes 默认"
+        approved, reason = await self.pending_mgr.require_approval(
+            window_id, "hermes_model_choice",
+            {"要使用的模型": req_model, "默认模型": default_model,
+             "说明": "AI 想用非默认模型执行本次任务，是否同意？拒绝将退回默认模型。"},
+            lambda text: _safe_event(event).send(MessageChain(chain=[Plain(text)])),
+            timeout=self.config.get("approval_timeout", 60)
+        )
+        if approved:
+            return True, req_model, ""
+        # 用户拒绝/超时 → 不中止任务，退回默认模型继续
+        return True, None, ""
+
+    @filter.llm_tool(name="hermes_list_models")
+    async def tool_list_models(self, event: AstrMessageEvent):
+        """列出当前 Hermes 激活 provider 实际可用的模型及其确切 ID 格式。
+
+        什么时候调用：当你（或用户）想在 hermes_send_message / hermes_create_session
+        里指定一个非默认模型时，**先调用本工具**拿到真实可用的模型 ID 列表，
+        再把列表里的准确 ID 填进那些工具的 model 参数。不要凭记忆猜测模型名——
+        模型名必须与本列表完全一致，否则会调用失败（失败时系统会自动退回默认模型）。
+
+        默认情况下无需换模型：留空 model 参数即用 Hermes 配置好的默认模型，最稳妥。
+        """
+        result = await discover_models(timeout=15)
+        yield formatters.format_model_list(result)
+
     @filter.llm_tool(name="hermes_create_session")
-    async def tool_create_session(self, event, prompt: str):
+    async def tool_create_session(self, event, prompt: str, model: str = ""):
         """创建一个新的 Hermes Agent 会话，用于执行指定的任务。
+
+        模型选择协议（重要）：
+        - 默认**不要**填 model 参数，留空即用 Hermes 已配置好的默认模型，这是最稳妥的选择。
+        - 只有当用户明确要求换模型、或任务确实需要特定模型时，才填 model。
+        - 填 model 前**必须**先调用 hermes_list_models 查询当前 provider 实际可用的模型 ID，
+          再把列表里的**准确 ID** 原样填进来。不要凭记忆猜测模型名。
+        - 若填入的模型不可用，系统会自动退回默认模型创建，并在结果中告知。
 
         Args:
             prompt(string): 会话的初始任务描述或提示词
+            model(string): 可选。指定使用的模型 ID（必须来自 hermes_list_models 的结果）。留空=用默认模型。
         """
         # 智能审批：创建会话属于中风险（消耗配额），smart 模式下也需要审批
         approval_mode = self.config.get("require_approval", "smart")
@@ -663,7 +763,14 @@ class HermesConnectorPlugin(Star):
                 if not approved:
                     yield _approval_failed_msg(reason)
                     return
-        
+
+        # 模型选择确认
+        req_model = (model or "").strip() or None
+        ok, chosen_model, note = await self._confirm_model_choice(event, req_model)
+        if not ok:
+            yield note
+            return
+
         yolo_mode = self.config.get("hermes_approval_mode", "normal") == "yolo"
 
         # 非阻塞模式：后台发送 + 进度监控
@@ -671,18 +778,20 @@ class HermesConnectorPlugin(Star):
             # 用 _background_create 统一处理：后台执行 + 监控 + 完成后推送
             # 创建新会话时 session_id=None，_background_create 会通过 chat() 获取新 sid
             task = asyncio.create_task(
-                self._background_create(event, prompt)
+                self._background_create(event, prompt, model=chosen_model)
             )
             self._track_bg_task(task)
-            yield f"⏳ 正在创建 Hermes 新会话...后台执行中，有进展时会通知你。"
+            model_hint = f"（模型: {chosen_model}）" if chosen_model else ""
+            yield f"⏳ 正在创建 Hermes 新会话{model_hint}...后台执行中，有进展时会通知你。"
             return
 
         # 阻塞模式（fallback）
         try:
-            result = await chat(
+            default_model = self.config.get("hermes_model", "") or None
+            result = await chat_with_fallback(
                 prompt,
                 workdir=self.config.get("hermes_workdir", "") or None,
-                model=self.config.get("hermes_model", "") or None,
+                model=chosen_model or default_model, default_model=default_model,
                 timeout=120, yolo=yolo_mode,
                 binary=self.config.get("hermes_command", "hermes"),
             )
@@ -696,6 +805,8 @@ class HermesConnectorPlugin(Star):
                 if len(response) > max_len:
                     response = response[:max_len] + f"\n\n...（回复过长，截断至 {max_len} 字符。可用 /hermes msg 查看完整消息）"
 
+            if result.get("model_fallback"):
+                response = f"⚠️ 指定模型 `{result.get('fallback_from')}` 不可用，已用默认模型。\n\n" + response
             yield formatters.format_response(result["session_id"], response, is_new=True)
         except HermesCliError as e:
             yield str(e)

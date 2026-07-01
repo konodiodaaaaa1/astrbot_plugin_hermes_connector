@@ -77,6 +77,45 @@ def format_response(session_id: str, response: str, is_new: bool = False) -> str
     )
 
 
+def format_model_list(result: dict, max_show: int = 60) -> str:
+    """格式化可用模型发现结果（供 LLM 阅读，说明确切用法）。"""
+    provider = result.get("provider") or "unknown"
+    default_model = result.get("default") or "(Hermes 内置默认)"
+
+    if not result.get("ok"):
+        return (
+            f"⚠️ 无法列出可用模型（provider: {provider}）。\n"
+            f"原因: {result.get('error')}\n\n"
+            f"👉 建议：不要指定模型，直接留空以使用 Hermes 默认模型 `{default_model}`。\n"
+            f"若确需切换，请用 `provider:model` 语法（如 `openrouter:anthropic/claude-sonnet-4`），"
+            f"provider 与 model 必须同时正确。"
+        )
+
+    models = result.get("models", [])
+    total = len(models)
+    shown = models[:max_show]
+
+    lines = [
+        f"🧠 **当前 Hermes 可用模型**（provider: `{provider}`，共 {total} 个）",
+        f"默认模型: `{default_model}`（不指定 model 参数时即用它）",
+        "",
+        "可用模型 ID（在 model 参数里**原样填写**下列其中之一）:",
+    ]
+    lines.extend(f"- `{m}`" for m in shown)
+    if total > max_show:
+        lines.append(f"…还有 {total - max_show} 个未列出。")
+
+    lines += [
+        "",
+        "📌 用法说明：",
+        "1. 默认无需指定模型——留空即用上面的默认模型，最稳妥。",
+        "2. 要换模型：把上面列表里的**确切 ID** 填入工具的 `model` 参数。",
+        "3. 这些模型都属于当前 provider，直接填裸 ID 即可，不需要加前缀。",
+        "4. 若某模型调用失败，系统会自动退回默认模型并告知。",
+    ]
+    return "\n".join(lines)
+
+
 def truncate(text: str, max_len: int = 1500) -> str:
     """截断长文本"""
     if len(text) <= max_len:

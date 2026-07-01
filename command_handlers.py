@@ -12,7 +12,7 @@ from astrbot.api import logger
 from astrbot.api.message_components import Plain
 
 from .hermes_cli_client import (
-    chat, list_sessions, check_health, get_session_detail,
+    chat, chat_with_fallback, list_sessions, check_health, get_session_detail,
     get_session_messages, delete_session, prune_sessions,
     rename_session_cmd, HermesCliError,
 )
@@ -184,11 +184,12 @@ class CommandHandlers:
             # 发送消息
             await self.send_reply(event, f"⏳ 正在发送到 {session_id[:16]}...")
             
-            result = await chat(
+            result = await chat_with_fallback(
                 message,
                 session_id=session_id,
                 workdir=self._workdir(),
                 model=self._model(),
+                default_model=None,
                 timeout=self._timeout(),
                 binary=self._binary(),
                 yolo=self._yolo(),
@@ -233,11 +234,12 @@ class CommandHandlers:
 
         # 阻塞模式（fallback）
         try:
-            result = await chat(
+            result = await chat_with_fallback(
                 message,
                 session_id=session_id,
                 workdir=self._workdir(),
                 model=self._model(),
+                default_model=None,
                 timeout=self._timeout(),
                 binary=self._binary(),
                 yolo=self._yolo(),
@@ -273,10 +275,11 @@ class CommandHandlers:
         await self.send_reply(event, f"⏳ 正在创建 Hermes 新会话...")
         
         try:
-            result = await chat(
+            result = await chat_with_fallback(
                 prompt,
                 workdir=self._workdir(),
                 model=self._model(),
+                default_model=None,
                 timeout=self._timeout(),
                 binary=self._binary(),
                 yolo=self._yolo(),

@@ -392,6 +392,9 @@ class HubHermesService(HermesService):
         """返回 SSE 异步生成器 (event, data)。"""
         return self._client.subscribe_events(sse_timeout=sse_timeout)
 
+    async def discover_models(self, timeout: int = 15) -> dict:
+        return await self._client.discover_models()
+
     async def close(self):
         await self._client.close()
 
@@ -441,6 +444,88 @@ async def chat(message: str, *, session_id: str | None = None,
         message, session_id=session_id, workdir=workdir, model=model,
         timeout=timeout, quiet=quiet, binary=binary, yolo=yolo
     )
+
+
+# 模型相关错误关键字：命中则认为「指定模型不可用」，可退回默认重试
+_MODEL_ERROR_HINTS = (
+    "model", "模型", "not found", "does not exist", "unknown model",
+    "invalid model", "unsupported", "no such model", "404", "400",
+)
+
+
+def _looks_like_model_error(msg: str) -> bool:
+    low = (msg or "").lower()
+    return any(h in low for h in _MODEL_ERROR_HINTS)
+
+
+async def chat_with_fallback(
+    message: str, *, session_id: str | None = None,
+    workdir: str | None = None, model: str | None = None,
+    default_model: str | None = None,
+    timeout: int = 120, quiet: bool = True,
+    binary: str | None = None, yolo: bool = False,
+) -> dict:
+    """带兜底的 chat：显式指定 model 失败时，退回默认模型重试一次。
+
+    - model 为空 → 直接用 Hermes 自身路由（不传 -m），不触发兜底。
+    - model 非空且调用失败且错误疑似与模型相关 → 去掉 -m（或换 default_model）重试。
+
+    返回的 dict 额外带：
+        "model_used": 实际使用的模型（None 表示 Hermes 默认路由）
+        "model_fallback": bool 是否发生了退回
+    """
+    # 未显式指定模型：走默认路由，不兜底
+    if not model:
+        result = await _service.chat(
+            message, session_id=session_id, workdir=workdir, model=None,
+            timeout=timeout, quiet=quiet, binary=binary, yolo=yolo,
+        )
+        result.setdefault("model_used", None)
+        result.setdefault("model_fallback", False)
+        return result
+
+    # 显式指定模型：先试，失败疑似模型问题则退回默认
+    try:
+        result = await _service.chat(
+            message, session_id=session_id, workdir=workdir, model=model,
+            timeout=timeout, quiet=quiet, binary=binary, yolo=yolo,
+        )
+        result["model_used"] = model
+        result["model_fallback"] = False
+        return result
+    except HermesCliError as e:
+        if not _looks_like_model_error(str(e)):
+            raise  # 非模型类错误，原样抛出
+        logger.warning(f"指定模型 '{model}' 调用失败，退回默认模型重试: {e}")
+        # 退回默认：优先 default_model（仍显式），否则完全交给 Hermes 路由
+        fallback_model = default_model or None
+        result = await _service.chat(
+            message, session_id=session_id, workdir=workdir, model=fallback_model,
+            timeout=timeout, quiet=quiet, binary=binary, yolo=yolo,
+        )
+        result["model_used"] = fallback_model
+        result["model_fallback"] = True
+        result["fallback_from"] = model
+        return result
+
+
+async def discover_models(timeout: int = 15) -> dict:
+    """发现当前 provider 可用模型（供 LLM 工具调用）。
+
+    - 本地模式：直接读 Hermes config.yaml + .env，请求 provider 的 /v1/models。
+    - Hub 模式：调用 Hub 的 /api/models 端点（Hub 与 Hermes 同机，读其本地配置）。
+    """
+    if isinstance(_service, HubHermesService):
+        try:
+            return await _service.discover_models(timeout=timeout)
+        except Exception as e:
+            return {
+                "ok": False, "provider": None, "base_url": None,
+                "default": None, "models": [],
+                "error": f"Hub 模型发现失败: {type(e).__name__}: {str(e)[:200]}",
+            }
+    from .model_discovery import discover_models as _discover
+    return await _discover(timeout=timeout)
 
 
 async def list_sessions(timeout: int = 15, binary: str | None = None) -> list[dict]:

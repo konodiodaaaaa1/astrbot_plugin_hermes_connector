@@ -1,8 +1,7 @@
 """Hermes Hub 会话管理路由。"""
 import logging
-import re
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from .auth import get_current_token
@@ -12,14 +11,6 @@ from .sse_manager import sse_manager
 
 logger = logging.getLogger("hermes_hub")
 router = APIRouter(prefix="/api")
-
-SESSION_ID_RE = re.compile(r"^[0-9]{8}_[0-9]{6}_[0-9a-f]{6,}$")
-
-
-async def _valid_session_id(session_id: str) -> str:
-    if not SESSION_ID_RE.match(session_id):
-        raise HTTPException(status_code=400, detail="Invalid session id format")
-    return session_id
 
 
 class CreateSessionBody(BaseModel):
@@ -58,7 +49,7 @@ async def list_sessions(token: dict = Depends(get_current_token)):
 
 
 @router.post("/sessions")
-async def create_session(body: CreateSessionBody = Body(...), token: dict = Depends(get_current_token)):
+async def create_session(body: CreateSessionBody, token: dict = Depends(get_current_token)):
     args = ["chat", "-q", body.message, "--quiet"]
     if body.model:
         args.extend(["--model", body.model])
@@ -76,7 +67,7 @@ async def create_session(body: CreateSessionBody = Body(...), token: dict = Depe
 
 
 @router.get("/sessions/{session_id}")
-async def get_session(session_id: str = Depends(_valid_session_id), token: dict = Depends(get_current_token)):
+async def get_session(session_id: str, token: dict = Depends(get_current_token)):
     code, stdout, stderr = await run_hermes(
         ["sessions", "export", "--session-id", session_id, "-"],
         timeout=30,
@@ -91,7 +82,7 @@ async def get_session(session_id: str = Depends(_valid_session_id), token: dict 
 
 @router.get("/sessions/{session_id}/messages")
 async def get_session_messages(
-    session_id: str = Depends(_valid_session_id),
+    session_id: str,
     limit: int = Query(50, ge=1, le=200),
     token: dict = Depends(get_current_token),
 ):
@@ -102,8 +93,8 @@ async def get_session_messages(
 
 @router.post("/sessions/{session_id}/messages")
 async def send_message(
-    session_id: str = Depends(_valid_session_id),
-    body: SendMessageBody = Body(...),
+    session_id: str,
+    body: SendMessageBody,
     token: dict = Depends(get_current_token),
 ):
     args = ["chat", "--resume", session_id, "-q", body.text, "--quiet"]
@@ -122,7 +113,7 @@ async def send_message(
 
 
 @router.post("/sessions/{session_id}/stop")
-async def stop_session(session_id: str = Depends(_valid_session_id), token: dict = Depends(get_current_token)):
+async def stop_session(session_id: str, token: dict = Depends(get_current_token)):
     code, stdout, stderr = await run_hermes(
         ["chat", "-q", "/stop", "--resume", session_id], timeout=30
     )
@@ -134,8 +125,8 @@ async def stop_session(session_id: str = Depends(_valid_session_id), token: dict
 
 @router.post("/sessions/{session_id}/rename")
 async def rename_session(
-    session_id: str = Depends(_valid_session_id),
-    body: RenameBody = Body(...),
+    session_id: str,
+    body: RenameBody,
     token: dict = Depends(get_current_token),
 ):
     code, stdout, stderr = await run_hermes(
@@ -148,7 +139,7 @@ async def rename_session(
 
 
 @router.delete("/sessions/{session_id}")
-async def delete_session(session_id: str = Depends(_valid_session_id), token: dict = Depends(get_current_token)):
+async def delete_session(session_id: str, token: dict = Depends(get_current_token)):
     code, stdout, stderr = await run_hermes(
         ["sessions", "delete", "--yes", session_id], timeout=30
     )
@@ -159,7 +150,7 @@ async def delete_session(session_id: str = Depends(_valid_session_id), token: di
 
 
 @router.post("/sessions/prune")
-async def prune_sessions(body: PruneBody = Body(...), token: dict = Depends(get_current_token)):
+async def prune_sessions(body: PruneBody, token: dict = Depends(get_current_token)):
     args = ["sessions", "prune", f"--older-than={body.older_than or 90}"]
     if body.source:
         args.append(f"--source={body.source}")
@@ -169,6 +160,17 @@ async def prune_sessions(body: PruneBody = Body(...), token: dict = Depends(get_
         raise HTTPException(status_code=500, detail=stderr[:500] or stdout[:500])
     sse_manager.publish("sessions_pruned", {"older_than": body.older_than})
     return {"ok": True, "detail": stdout.strip() or "pruned"}
+
+
+@router.get("/models")
+async def list_models(token: dict = Depends(get_current_token)):
+    """返回当前 Hermes 激活 provider 可用的模型列表。
+
+    Hub 与 Hermes 同机，直接读 Hermes config.yaml（model.base_url/provider）
+    和 .env（API key），请求 provider 的 OpenAI 兼容 /v1/models。
+    """
+    from .model_discovery import discover_models
+    return await discover_models(timeout=15)
 
 
 async def _fetch_detail(session_id: str) -> dict:

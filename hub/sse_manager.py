@@ -1,4 +1,5 @@
 """Hermes Hub SSE 事件管理。"""
+
 import asyncio
 import json
 from typing import AsyncGenerator
@@ -11,15 +12,22 @@ class Event:
 
 
 class SSEManager:
-    def __init__(self):
+    def __init__(self, heartbeat_interval: float = 30.0):
         self._queues: set[asyncio.Queue] = set()
+        self._heartbeat_interval = heartbeat_interval
 
     async def subscribe(self) -> AsyncGenerator[str, None]:
         queue: asyncio.Queue = asyncio.Queue()
         self._queues.add(queue)
         try:
             while True:
-                event = await queue.get()
+                try:
+                    event = await asyncio.wait_for(
+                        queue.get(), timeout=self._heartbeat_interval
+                    )
+                except asyncio.TimeoutError:
+                    yield ": heartbeat\n\n"
+                    continue
                 if event is None:
                     break
                 yield f"event: {event.event}\ndata: {json.dumps(event.data, ensure_ascii=False)}\n\n"

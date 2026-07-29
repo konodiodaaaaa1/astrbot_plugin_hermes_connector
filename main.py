@@ -6,6 +6,8 @@ Hermes Connector AstrBot 插件入口
 
 import asyncio
 
+import aiohttp
+
 from astrbot.api.event import filter, AstrMessageEvent, MessageChain
 from astrbot.api.star import Context, Star, register
 from astrbot.api import AstrBotConfig, logger
@@ -72,22 +74,58 @@ def _safe_set_session(state_mgr, event, session_id, idx=None):
         state_mgr.set_current_session(window_id, session_id)
 
 
+def _is_hub_event_listener_task(task: asyncio.Task) -> bool:
+    """识别插件重载前遗留的 Hub 事件监听任务。"""
+    coro = task.get_coro()
+    return getattr(coro, "__qualname__", "") == (
+        "HermesConnectorPlugin._hub_event_listener"
+    )
+
+
+def _cancel_stale_hub_event_listeners() -> int:
+    """取消旧插件实例泄漏的监听任务，返回取消数量。"""
+    try:
+        tasks = asyncio.all_tasks()
+    except RuntimeError:
+        return 0
+
+    stale_tasks = [task for task in tasks if _is_hub_event_listener_task(task)]
+    for task in stale_tasks:
+        task.cancel()
+    return len(stale_tasks)
+
+
 @register("astrbot_plugin_hermes_connector", "konodiodaaaaa1",
           "连接 Hermes Agent，在聊天平台上远程操控 Hermes 会话，随时随地 Agent",
-          "1.3.4")
+          "1.3.5")
 class HermesConnectorPlugin(Star):
     
     async def _hub_event_listener(self):
         """订阅 Hermes Hub 的 SSE 事件，带自动重连与事件分发。"""
         while True:
+            if not self.progress_monitor.has_active_sessions():
+                try:
+                    await asyncio.sleep(5)
+                except asyncio.CancelledError:
+                    raise
+                continue
+
             try:
                 async for event, data in subscribe_events(sse_timeout=90):
+                    if not self.progress_monitor.has_active_sessions():
+                        break
                     logger.debug(f"Hermes Hub event: {event} {data}")
                     await self._dispatch_hub_event(event, data)
             except asyncio.CancelledError:
                 raise
+            except (aiohttp.ServerTimeoutError, asyncio.TimeoutError, TimeoutError) as e:
+                if self.progress_monitor.has_active_sessions():
+                    logger.debug(f"Hub 事件流读取超时，5 秒后重连: {e}")
             except Exception as e:
-                logger.warning(f"Hub 事件监听异常，5 秒后重连: {e}")
+                if self.progress_monitor.has_active_sessions():
+                    logger.warning(f"Hub 事件监听异常，5 秒后重连: {e}")
+                else:
+                    logger.debug(f"Hub 事件监听已随空闲会话停止: {e}")
             try:
                 await asyncio.sleep(5)
             except asyncio.CancelledError:
@@ -127,6 +165,9 @@ class HermesConnectorPlugin(Star):
         # 根据配置选择本地 CLI 还是远程 Hub
         _hcc.configure_service(self.config)
         if _hcc.is_hub_mode():
+            stale_count = _cancel_stale_hub_event_listeners()
+            if stale_count:
+                logger.debug(f"已取消 {stale_count} 个重载遗留的 Hub 事件监听任务")
             self._track_bg_task(asyncio.create_task(self._hub_event_listener()))
         
         logger.info(f"Hermes Connector 已加载。快捷前缀: '{self.quick_prefix}'")
@@ -165,6 +206,12 @@ class HermesConnectorPlugin(Star):
     
     async def terminate(self):
         self.progress_monitor.stop_all()
+        tasks = list(self._bg_tasks)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._bg_tasks.clear()
     
     # ── 辅助 ─────────────────────────────────────────
     

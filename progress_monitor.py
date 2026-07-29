@@ -94,6 +94,13 @@ class ProgressMonitor:
     def is_monitored(self, session_id: str) -> bool:
         return session_id in self._bars and not self._bars[session_id].finished
 
+    def has_active_sessions(self) -> bool:
+        """是否仍有需要事件监听或进度轮询的活跃会话。"""
+        return any(
+            not bar.finished and (bar.task is None or not bar.task.done())
+            for bar in self._bars.values()
+        )
+
     def stop_monitoring(self, session_id: str) -> None:
         """停止监控某个会话"""
         bar = self._bars.get(session_id)

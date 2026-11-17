@@ -25,34 +25,36 @@ def parse_response_text(output: str) -> str:
 
 
 def parse_sessions_list(output: str) -> list[dict]:
+    """按实际表头读取列，兼容带 Workspace/Src 的新版 CLI 输出。"""
     sessions = []
-    lines = _strip_ansi(output).strip().split("\n")
+    lines = _strip_ansi(output).splitlines()
     header_idx = None
+    columns = []
     for i, line in enumerate(lines):
-        if line.strip().startswith("Title"):
+        if line.startswith(("Title", "Preview")) and "Last Active" in line:
+            columns = list(re.finditer(r"Title|Preview|Workspace|Last Active|Src|\bID\b", line))
+            if not columns or columns[-1].group() != "ID":
+                continue
             header_idx = i
             break
     if header_idx is None:
         return sessions
-    data_start = header_idx + 2
-    for line in lines[data_start:]:
-        line = line.strip()
-        if not line or line.startswith(LIST_SEPARATOR[0]):
+    for line in lines[header_idx + 1:]:
+        if not line.strip() or line.lstrip().startswith(("─", "…", "...")):
             continue
-        try:
-            title = line[:32].strip()
-            preview = line[32:73].strip()
-            last_active = line[73:87].strip()
-            session_id = line[87:].strip()
-            if session_id:
-                sessions.append({
-                    "id": session_id,
-                    "title": title if title != "—" else None,
-                    "preview": preview if preview != "—" else None,
-                    "last_active": last_active,
-                })
-        except Exception:
-            pass
+        values = {
+            col.group(): line[col.start():columns[idx + 1].start() if idx + 1 < len(columns) else None].strip()
+            for idx, col in enumerate(columns)
+        }
+        session_id = values.get("ID", "")
+        if not session_id or any(c.isspace() for c in session_id):
+            continue
+        sessions.append({
+            "id": session_id,
+            "title": values.get("Title") if values.get("Title") not in (None, "", "—") else None,
+            "preview": values.get("Preview") if values.get("Preview") not in (None, "", "—") else None,
+            "last_active": values.get("Last Active", ""),
+        })
     return sessions
 
 

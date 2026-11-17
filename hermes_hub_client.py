@@ -149,7 +149,7 @@ class AsyncHermesHubClient:
 
     async def create_session(self, message: str, workdir: str | None = None, model: str | None = None,
                              timeout: int = 120, yolo: bool = False) -> dict:
-        return await self.post_json("/api/sessions", json={
+        return await self.post_json("/api/sessions", timeout=aiohttp.ClientTimeout(total=max(self._timeout, timeout + 15)), json={
             "message": message,
             "workdir": workdir,
             "model": model,
@@ -167,7 +167,7 @@ class AsyncHermesHubClient:
 
     async def send_message(self, session_id: str, text: str, workdir: str | None = None,
                            model: str | None = None, timeout: int = 120, yolo: bool = False) -> dict:
-        return await self.post_json(f"/api/sessions/{session_id}/messages", json={
+        return await self.post_json(f"/api/sessions/{session_id}/messages", timeout=aiohttp.ClientTimeout(total=max(self._timeout, timeout + 15)), json={
             "text": text,
             "workdir": workdir,
             "model": model,

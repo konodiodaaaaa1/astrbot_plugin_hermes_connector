@@ -13,7 +13,7 @@ import asyncio
 import json
 import logging
 import os
-import re
+import yaml
 import urllib.request
 from typing import Optional
 
@@ -52,29 +52,25 @@ def _first_existing(paths: list[str]) -> Optional[str]:
 
 
 def _read_model_config() -> dict:
+    """读取旧版 model 字段与新版命名 provider 路由。"""
     cfg_path = _first_existing(_HERMES_CONFIG_CANDIDATES)
-    result = {"base_url": None, "provider": None, "default": None, "config_path": cfg_path}
+    result = {"base_url": None, "provider": None, "default": None,
+              "key_env": None, "config_path": cfg_path}
     if not cfg_path:
         return result
-    in_model = False
     try:
-        with open(cfg_path, encoding="utf-8") as f:
-            for line in f:
-                if re.match(r"^model:\s*$", line):
-                    in_model = True
-                    continue
-                if in_model:
-                    if re.match(r"^\S", line):
-                        break
-                    m = re.match(r"\s+base_url:\s*(.+?)\s*$", line)
-                    if m:
-                        result["base_url"] = m.group(1).strip().strip('"').strip("'")
-                    m = re.match(r"\s+provider:\s*(.+?)\s*$", line)
-                    if m:
-                        result["provider"] = m.group(1).strip().strip('"').strip("'")
-                    m = re.match(r"\s+default:\s*(.+?)\s*$", line)
-                    if m:
-                        result["default"] = m.group(1).strip().strip('"').strip("'")
+        with open(cfg_path, encoding="utf-8-sig") as f:
+            config = yaml.safe_load(f) or {}
+        model = config.get("model") or {}
+        result.update({key: model.get(key) for key in ("base_url", "provider", "default")})
+        provider = result["provider"] or ""
+        name = provider.split(":", 1)[-1]
+        entry = (config.get("providers") or {}).get(name) or {}
+        if not entry:
+            entry = next((item for item in config.get("custom_providers", [])
+                          if item.get("name") == name), {})
+        result["base_url"] = result["base_url"] or entry.get("base_url") or entry.get("api")
+        result["key_env"] = entry.get("key_env")
     except Exception as e:
         logger.warning("读取 Hermes config.yaml 失败: %s", e)
     return result
@@ -103,7 +99,11 @@ def _read_env_keys() -> dict:
     return keys
 
 
-def _resolve_api_key(provider: Optional[str], base_url: Optional[str], env: dict) -> str:
+def _resolve_api_key(provider: Optional[str], base_url: Optional[str], env: dict, key_env: Optional[str] = None) -> str:
+    if key_env:
+        key = env.get(key_env) or os.environ.get(key_env)
+        if key:
+            return key
     prov = (provider or "").strip().lower()
     candidates = _PROVIDER_KEY_ENV.get(prov, [])
     if base_url and "openrouter" in base_url.lower():
@@ -153,7 +153,7 @@ async def discover_models(timeout: int = 15) -> dict:
         }
 
     env = _read_env_keys()
-    api_key = _resolve_api_key(provider, base_url, env)
+    api_key = _resolve_api_key(provider, base_url, env, key_env=cfg.get("key_env"))
     try:
         ids = await asyncio.to_thread(_fetch_models_sync, base_url, api_key, timeout)
         return {

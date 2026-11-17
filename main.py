@@ -212,6 +212,9 @@ class HermesConnectorPlugin(Star):
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         self._bg_tasks.clear()
+        service = _hcc.get_service()
+        if hasattr(service, "close"):
+            await service.close()
     
     # ── 辅助 ─────────────────────────────────────────
     
@@ -394,8 +397,12 @@ class HermesConnectorPlugin(Star):
     # ═══════════════════════════════════════════════════
     
     @filter.llm_tool(name="hermes_list_sessions")
-    async def tool_list_sessions(self, event: AstrMessageEvent):
-        """列出所有 Hermes Agent 会话及其当前状态。调用此工具后，用户可以指定序号来切换或发送消息。"""
+    async def tool_list_sessions(self, event: AstrMessageEvent, reason: str = ""):
+        """列出所有 Hermes Agent 会话及其当前状态。调用此工具后，用户可以指定序号来切换或发送消息。
+
+        Args:
+            reason(string): 可选，调用原因。
+        """
         await self._refresh_sessions()
         sessions = self.state_mgr.get_sessions_cache()
         if not sessions:
@@ -766,7 +773,7 @@ class HermesConnectorPlugin(Star):
         return True, None, ""
 
     @filter.llm_tool(name="hermes_list_models")
-    async def tool_list_models(self, event: AstrMessageEvent):
+    async def tool_list_models(self, event: AstrMessageEvent, reason: str = ""):
         """列出当前 Hermes 激活 provider 实际可用的模型及其确切 ID 格式。
 
         什么时候调用：当你（或用户）想在 hermes_send_message / hermes_create_session
@@ -775,6 +782,9 @@ class HermesConnectorPlugin(Star):
         模型名必须与本列表完全一致，否则会调用失败（失败时系统会自动退回默认模型）。
 
         默认情况下无需换模型：留空 model 参数即用 Hermes 配置好的默认模型，最稳妥。
+
+        Args:
+            reason(string): 可选，调用原因。
         """
         result = await discover_models(timeout=15)
         yield formatters.format_model_list(result)
@@ -888,8 +898,12 @@ class HermesConnectorPlugin(Star):
         yield f"已切换到会话 [{session['id'][:12]}...] {title} - {preview}"
     
     @filter.llm_tool(name="hermes_check_health")
-    async def tool_check_health(self, event: AstrMessageEvent):
-        """检查 Hermes Agent 的连接状态和版本信息。当用户报告 Hermes 不响应时优先调用此工具。"""
+    async def tool_check_health(self, event: AstrMessageEvent, reason: str = ""):
+        """检查 Hermes Agent 的连接状态和版本信息。当用户报告 Hermes 不响应时优先调用此工具。
+
+        Args:
+            reason(string): 可选，调用原因。
+        """
         try:
             health = await check_health()
             if health["ok"]:
@@ -993,8 +1007,12 @@ class HermesConnectorPlugin(Star):
         yield "\n".join(lines)
     
     @filter.llm_tool(name="hermes_approve_all")
-    async def tool_approve_all(self, event: AstrMessageEvent):
-        """批准当前所有待审批的请求。当用户确认安全时使用此工具批量放行。"""
+    async def tool_approve_all(self, event: AstrMessageEvent, reason: str = ""):
+        """批准当前所有待审批的请求。当用户确认安全时使用此工具批量放行。
+
+        Args:
+            reason(string): 可选，调用原因。
+        """
         window_id = _safe_window_id(event)
         result = await self.pending_mgr.approve_all(window_id)
         if result:
@@ -1003,8 +1021,12 @@ class HermesConnectorPlugin(Star):
             yield "📭 没有待审批的请求。"
     
     @filter.llm_tool(name="hermes_deny_all")
-    async def tool_deny_all(self, event: AstrMessageEvent):
-        """拒绝当前所有待审批的请求。"""
+    async def tool_deny_all(self, event: AstrMessageEvent, reason: str = ""):
+        """拒绝当前所有待审批的请求。
+
+        Args:
+            reason(string): 可选，调用原因。
+        """
         window_id = _safe_window_id(event)
         result = await self.pending_mgr.deny_all(window_id)
         if result:

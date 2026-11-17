@@ -69,7 +69,9 @@ class ListenerLifecycleTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls, [])
 
     async def test_terminate_cancels_background_tasks(self):
-        namespace = _load_main_members("terminate", namespace={"asyncio": asyncio})
+        namespace = _load_main_members(
+            "terminate", namespace={"asyncio": asyncio, "_hcc": SimpleNamespace(get_service=lambda: object())}
+        )
         task = asyncio.create_task(asyncio.sleep(3600))
         plugin = SimpleNamespace(
             progress_monitor=SimpleNamespace(stop_all=lambda: None),
